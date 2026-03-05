@@ -8,13 +8,13 @@ from streamlit_lightweight_charts import renderLightweightCharts
 # 设置页面配置
 st.set_page_config(
     page_title="技术分析平台",
-    page_icon="��",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # 标题和描述
-st.title("�� 专业级技术分析平台")
+st.title("📈 专业级技术分析平台")
 st.markdown("使用Streamlit和Lightweight Charts构建的实时技术分析工具")
 
 # 侧边栏配置
@@ -96,98 +96,148 @@ def calculate_rsi(prices, period=14):
     
     return rsi
 
-# 创建多窗格图表
+# 创建多窗格图表（使用Lightweight Charts）
 def create_multi_pane_chart(df, show_sma=False, sma_periods=[], show_rsi=True):
-    # 创建子图
-    rows = 2 if not show_rsi else 3
-    row_heights = [0.6, 0.2] if not show_rsi else [0.5, 0.2, 0.3]
-    titles = ('价格走势', '成交量') if not show_rsi else ('价格走势', '成交量', 'RSI指标')
+    # 准备K线数据
+    candles = []
+    for _, row in df.iterrows():
+        candle = {
+            "time": row['Date'].strftime('%Y-%m-%d'),
+            "open": float(row['Open']),
+            "high": float(row['High']),
+            "low": float(row['Low']),
+            "close": float(row['Close'])
+        }
+        candles.append(candle)
     
-    fig = make_subplots(
-        rows=rows, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        subplot_titles=titles,
-        row_heights=row_heights
-    )
+    # 准备成交量数据
+    volume_data = []
+    for _, row in df.iterrows():
+        volume = {
+            "time": row['Date'].strftime('%Y-%m-%d'),
+            "value": float(row['Volume']),
+            "color": "rgba(239, 83, 80, 0.8)" if row['Close'] < row['Open'] else "rgba(38, 166, 154, 0.8)"
+        }
+        volume_data.append(volume)
     
-    # 添加蜡烛图
-    fig.add_trace(
-        go.Candlestick(
-            x=df['Date'],
-            open=df['Open'],
-            high=df['High'],
-            low=df['Low'],
-            close=df['Close'],
-            name='价格'
-        ),
-        row=1, col=1
-    )
-    
-    # 添加移动平均线
+    # 准备移动平均线数据
+    sma_series = []
     if show_sma:
-        for period in sma_periods:
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD']
+        for idx, period in enumerate(sma_periods):
             if len(df) >= period:
                 sma_values = df['Close'].rolling(window=period).mean()
-                fig.add_trace(
-                    go.Scatter(
-                        x=df['Date'],
-                        y=sma_values,
-                        name=f'SMA {period}',
-                        line=dict(width=1, dash='dash')
-                    ),
-                    row=1, col=1
-                )
+                sma_line = []
+                for i, (_, row) in enumerate(df.iterrows()):
+                    if i >= period - 1:
+                        sma_line.append({
+                            "time": row['Date'].strftime('%Y-%m-%d'),
+                            "value": float(sma_values.iloc[i])
+                        })
+                sma_series.append({
+                    "type": "Line",
+                    "data": sma_line,
+                    "options": {
+                        "color": colors[idx % len(colors)],
+                        "lineWidth": 2,
+                        "title": f"SMA {period}"
+                    }
+                })
     
-    # 添加成交量
-    colors = ['red' if row['Close'] < row['Open'] else 'green' 
-              for _, row in df.iterrows()]
-    
-    fig.add_trace(
-        go.Bar(
-            x=df['Date'],
-            y=df['Volume'],
-            name='成交量',
-            marker_color=colors
-        ),
-        row=2, col=1
-    )
-    
-    # 添加RSI
+    # 准备RSI数据
+    rsi_series = []
     if show_rsi and len(df) > 14:
         rsi_values = calculate_rsi(df['Close'].values)
-        fig.add_trace(
-            go.Scatter(
-                x=df['Date'],
-                y=rsi_values,
-                name='RSI(14)',
-                line=dict(color='purple', width=2)
-            ),
-            row=3, col=1
-        )
-        
-        # 添加RSI超买超卖线
-        fig.add_hline(y=70, line_dash="dash", line_color="red", 
-                     row=3, col=1, opacity=0.5)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", 
-                     row=3, col=1, opacity=0.5)
+        rsi_line = []
+        for i, (_, row) in enumerate(df.iterrows()):
+            if i >= 14:
+                rsi_line.append({
+                    "time": row['Date'].strftime('%Y-%m-%d'),
+                    "value": float(rsi_values[i])
+                })
+        rsi_series.append({
+            "type": "Line",
+            "data": rsi_line,
+            "options": {
+                "color": '#9C27B0',
+                "lineWidth": 2,
+                "title": "RSI(14)"
+            }
+        })
     
-    # 更新布局
-    fig.update_layout(
-        title=f'{ticker} 技术分析',
-        yaxis_title='价格',
-        xaxis_rangeslider_visible=False,
-        height=800 if show_rsi else 600,
-        showlegend=True
-    )
+    # 创建主价格系列
+    main_series = [{
+        "type": "Candlestick",
+        "data": candles,
+        "options": {
+            "upColor": '#26a69a',
+            "downColor": '#ef5350',
+            "borderVisible": False,
+            "wickUpColor": '#26a69a',
+            "wickDownColor": '#ef5350'
+        }
+    }]
     
-    if show_rsi:
-        fig.update_xaxes(title_text="日期", row=3, col=1)
-        fig.update_yaxes(title_text="RSI", row=3, col=1)
+    # 添加移动平均线到主系列
+    main_series.extend(sma_series)
     
-    fig.update_yaxes(title_text="成交量", row=2, col=1)
+    # 创建多窗格配置
+    panes = []
     
-    return fig
+    # 主价格窗格
+    price_pane = {
+        "series": main_series
+    }
+    panes.append(price_pane)
+    
+    # 成交量窗格
+    volume_pane = {
+        "height": 100,
+        "series": [{
+            "type": "Histogram",
+            "data": volume_data,
+            "options": {
+                "priceFormat": {
+                    "type": 'volume'
+                }
+            }
+        }]
+    }
+    panes.append(volume_pane)
+    
+    # RSI窗格
+    if show_rsi and rsi_series:
+        rsi_pane = {
+            "height": 100,
+            "series": rsi_series
+        }
+        panes.append(rsi_pane)
+    
+    # 图表配置
+    chart_config = {
+        "chart": {
+            "layout": {
+                "textColor": 'black',
+                "background": {
+                    "type": 'solid',
+                    "color": 'white'
+                }
+            },
+            "grid": {
+                "vertLines": {
+                    "color": 'rgba(197, 203, 206, 0.3)'
+                },
+                "horzLines": {
+                    "color": 'rgba(197, 203, 206, 0.3)'
+                }
+            },
+            "width": 900,
+            "height": 500
+        },
+        "panes": panes
+    }
+    
+    return chart_config
 
 # 主界面
 if st.sidebar.button("更新图表", type="primary"):
@@ -217,9 +267,12 @@ if st.sidebar.button("更新图表", type="primary"):
                     sma_20 = df['Close'].rolling(20).mean().iloc[-1]
                     st.metric("20日SMA", f"{sma_20:.2f}")
             
-            # 显示图表
-            fig = create_multi_pane_chart(df, show_sma, sma_periods, show_rsi)
-            st.plotly_chart(fig, use_container_width=True)
+            # 创建图表配置
+            chart_config = create_multi_pane_chart(df, show_sma, sma_periods if show_sma else [], show_rsi)
+            
+            # 渲染图表
+            st.subheader(f"{ticker} 技术分析图表")
+            renderLightweightCharts([chart_config], key='main_chart')
             
             # 显示数据表格
             with st.expander("查看原始数据"):
@@ -228,16 +281,16 @@ if st.sidebar.button("更新图表", type="primary"):
             # 数据导出
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="�� 下载CSV数据",
+                label="📥 下载CSV数据",
                 data=csv,
                 file_name=f"{ticker}_stock_data.csv",
                 mime="text/csv"
             )
-else:
+        else:
             st.error("无法获取股票数据，请检查股票代码是否正确")
-# else:
-#     st.info("�� 请在侧边栏设置参数，然后点击'更新图表'按钮")
+else:
+    st.info("👈 请在侧边栏设置参数，然后点击'更新图表'按钮")
 
 # 底部信息
 st.markdown("---")
-st.caption("�� 数据来源: Yahoo Finance | �� 部署平台: Streamlit Community Cloud")
+st.caption("📊 数据来源: Yahoo Finance | 🚀 部署平台: Streamlit Community Cloud")

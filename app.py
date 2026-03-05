@@ -3,8 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from streamlit_lightweight_charts import renderLightweightCharts
 
 # 设置页面配置
 st.set_page_config(
@@ -16,7 +15,7 @@ st.set_page_config(
 
 # 标题和描述
 st.title("�� 专业级技术分析平台")
-st.markdown("使用Streamlit和Plotly构建的实时技术分析工具")
+st.markdown("使用Streamlit和Lightweight Charts构建的实时技术分析工具")
 
 # 侧边栏配置
 with st.sidebar:

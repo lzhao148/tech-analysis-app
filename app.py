@@ -76,30 +76,48 @@ def get_stock_data(ticker_symbol, period_str):
         return None
 
 # ================= RSI 计算 =================
+# ================= RSI 计算 =================
 def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return np.full(len(prices), np.nan)
+    
     deltas = np.diff(prices)
-    seed = deltas[:period + 1]
+    
+    # 确保有足够的数据
+    if len(deltas) < period:
+        return np.full(len(prices), np.nan)
+    
+    seed = deltas[:period]
     up = seed[seed >= 0].sum() / period
     down = -seed[seed < 0].sum() / period
+    
+    if down == 0:
+        return np.full(len(prices), 100.0)
+    
     rs = up / down
     rsi = np.zeros_like(prices, dtype=float)
-    rsi[:period] = 100.0 - 100.0 / (1.0 + rs)
-
+    rsi[:period] = np.nan  # 前period个数据点设为NaN
+    
     for i in range(period, len(prices)):
-        delta = deltas[i - 1]
+        delta = deltas[i-1]
         if delta > 0:
             upval = delta
             downval = 0.0
         else:
             upval = 0.0
             downval = -delta
-
+        
         up = (up * (period - 1) + upval) / period
         down = (down * (period - 1) + downval) / period
-        rs = up / down
-        rsi[i] = 100.0 - 100.0 / (1.0 + rs)
-
+        
+        if down == 0:
+            rsi[i] = 100.0
+        else:
+            rs = up / down
+            rsi[i] = 100.0 - 100.0 / (1.0 + rs)
+    
     return rsi
+
 
 # ================= TD Sequential 计算 =================
 def calculate_td_sequential(df, lookback=9, count_threshold=9):

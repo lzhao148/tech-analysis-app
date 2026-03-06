@@ -75,49 +75,51 @@ def get_stock_data(ticker_symbol, period_str):
         st.error(f"获取数据失败: {e}")
         return None
 
-# ================= RSI 计算 =================
-# ================= RSI 计算 =================
+# ================= RSI 计算（修正版） =================
 def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return np.full(len(prices), np.nan)
-    
+    prices = np.asarray(prices, dtype=float)
+    n = len(prices)
+    if n < period + 1:
+        return np.full(n, np.nan)
+
     deltas = np.diff(prices)
-    
-    # 确保有足够的数据
     if len(deltas) < period:
-        return np.full(len(prices), np.nan)
-    
+        return np.full(n, np.nan)
+
+    # 初始均值
     seed = deltas[:period]
     up = seed[seed >= 0].sum() / period
     down = -seed[seed < 0].sum() / period
-    
+
+    rsi = np.full(n, np.nan, dtype=float)
+
+    # 第 period 个位置给出第一个 RSI
     if down == 0:
-        return np.full(len(prices), 100.0)
-    
-    rs = up / down
-    rsi = np.zeros_like(prices, dtype=float)
-    rsi[:period] = np.nan  # 前period个数据点设为NaN
-    
-    for i in range(period, len(prices)):
-        delta = deltas[i-1]
+        rsi[period] = 100.0
+    else:
+        rs = up / down
+        rsi[period] = 100.0 - 100.0 / (1.0 + rs)
+
+    # 之后做 Wilder 平滑
+    for i in range(period + 1, n):
+        delta = deltas[i - 1]
         if delta > 0:
             upval = delta
             downval = 0.0
         else:
             upval = 0.0
             downval = -delta
-        
+
         up = (up * (period - 1) + upval) / period
         down = (down * (period - 1) + downval) / period
-        
+
         if down == 0:
             rsi[i] = 100.0
         else:
             rs = up / down
             rsi[i] = 100.0 - 100.0 / (1.0 + rs)
-    
-    return rsi
 
+    return rsi
 
 # ================= TD Sequential 计算 =================
 def calculate_td_sequential(df, lookback=9, count_threshold=9):
@@ -226,11 +228,10 @@ def calculate_td_sequential(df, lookback=9, count_threshold=9):
     }
 
 # ================= 数据预处理为 chart_data =================
-# ================= 数据预处理为 chart_data =================
 def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show_td=False, td_params=None):
     if sma_periods is None:
         sma_periods = []
-    
+
     chart_data = {
         "candles": [],
         "volume": [],
@@ -240,7 +241,7 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
         "td_setup": [],
         "td_countdown": []
     }
-    
+
     # K 线
     for _, row in df.iterrows():
         chart_data["candles"].append({
@@ -250,7 +251,7 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
             "low": float(row["Low"]),
             "close": float(row["Close"])
         })
-    
+
     # 成交量
     for _, row in df.iterrows():
         chart_data["volume"].append({
@@ -258,7 +259,7 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
             "value": float(row["Volume"]),
             "color": "rgba(239, 83, 80, 0.8)" if row["Close"] < row["Open"] else "rgba(38, 166, 154, 0.8)"
         })
-    
+
     # SMA
     if show_sma:
         for period in sma_periods:
@@ -272,22 +273,21 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
                             "value": float(sma_values.iloc[i])
                         })
                 chart_data["sma"][f"SMA_{period}"] = sma_series
-    
-    # RSI - 修复部分
+
+    # RSI（用修正版计算 + 过滤 NaN）
     if show_rsi and len(df) > 14:
         rsi_values = calculate_rsi(df["Close"].values)
         for i, (_, row) in enumerate(df.iterrows()):
-            # 修复：确保i在rsi_values范围内，并且跳过NaN值
             if i < len(rsi_values) and not np.isnan(rsi_values[i]):
                 chart_data["rsi"].append({
                     "time": row["Date"].strftime("%Y-%m-%d"),
                     "value": float(rsi_values[i])
                 })
-    
+
     # TD Sequential
     if show_td and td_params and len(df) > td_params["lookback"]:
         td_results = calculate_td_sequential(df, td_params["lookback"], td_params["count_threshold"])
-        
+
         # TD Setup
         for i, (_, row) in enumerate(df.iterrows()):
             if i >= td_params["lookback"]:
@@ -297,7 +297,7 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
                         "time": row["Date"].strftime("%Y-%m-%d"),
                         "value": int(setup_value)
                     })
-        
+
         # TD Countdown
         for i, (_, row) in enumerate(df.iterrows()):
             countdown_value = td_results["td_countdown"][i]
@@ -306,7 +306,7 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
                     "time": row["Date"].strftime("%Y-%m-%d"),
                     "value": int(countdown_value)
                 })
-        
+
         # 信号
         for signal in td_results["signals"]:
             chart_data["td_signals"].append({
@@ -314,15 +314,15 @@ def prepare_chart_data(df, show_sma=False, sma_periods=None, show_rsi=True, show
                 "type": signal["type"],
                 "value": float(signal["value"])
             })
-    
+
     return chart_data
 
-# ================= 构建 charts 列表（符合组件 API） =================
+# ================= 构建 charts 列表 =================
 def create_charts(chart_data, show_sma=False, sma_periods=None, show_rsi=True, show_td=False):
     if sma_periods is None:
         sma_periods = []
 
-    # --- 主图 chartOptions ---
+    # 主图配置
     chart_options_main = {
         "layout": {
             "textColor": "black",
@@ -336,7 +336,6 @@ def create_charts(chart_data, show_sma=False, sma_periods=None, show_rsi=True, s
         "height": 400
     }
 
-    # --- 主图 series：K线 + SMA + TD 标记 ---
     main_series = [{
         "type": "Candlestick",
         "data": chart_data["candles"],
@@ -400,7 +399,7 @@ def create_charts(chart_data, show_sma=False, sma_periods=None, show_rsi=True, s
         "series": main_series
     }
 
-    # --- 成交量 chart ---
+    # 成交量 chart
     volume_chart = {
         "chart": {
             "layout": {
@@ -421,7 +420,7 @@ def create_charts(chart_data, show_sma=False, sma_periods=None, show_rsi=True, s
 
     charts = [main_chart, volume_chart]
 
-    # --- RSI chart ---
+    # RSI chart
     if show_rsi and chart_data["rsi"]:
         rsi_chart = {
             "chart": {
@@ -444,7 +443,7 @@ def create_charts(chart_data, show_sma=False, sma_periods=None, show_rsi=True, s
         }
         charts.append(rsi_chart)
 
-    # --- TD 计数 chart ---
+    # TD 计数 chart
     if show_td and (chart_data["td_setup"] or chart_data["td_countdown"]):
         td_series = []
         if chart_data["td_setup"]:

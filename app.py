@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 from datetime import datetime, date, timedelta
 from io import StringIO
 import akshare as ak
@@ -9,47 +8,55 @@ from streamlit_lightweight_charts import renderLightweightCharts
 
 # ================= 页面配置 =================
 st.set_page_config(
-    page_title="北向资金 + 港股股价分析",
-    page_icon="💸",
+    page_title="港股通南下资金与股价分析",
+    page_icon="💹",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("💸 北向资金流向与港股股价分析平台")
-st.markdown("AKShare 提供北向资金数据，Yahoo Finance 提供港股股价。")
+st.title("💹 港股通南下资金流向与股价走势图")
+st.markdown(
+    "数据源：AKShare-沪深港通历史数据（南向资金），港股股价来自 Yahoo Finance。[web:108]"
+)
 
 # ================= 数据获取函数 =================
 @st.cache_data(ttl=3600)
-def get_northbound_hist():
-    """北向资金历史数据（单位：亿元人民币）"""
+def get_southbound_hist():
+    """
+    使用 AKShare 获取南向资金历史数据
+    symbol=\"南向资金\"，字段含：日期、当日成交净买额、买入成交额、卖出成交额、累计成交净买额等。[web:108]
+    单位：亿元人民币。
+    """
     try:
-        df = ak.stock_hsgt_hist_em(symbol="北向资金")
+        df = ak.stock_hsgt_hist_em(symbol="南向资金")  # choice: 南向资金 / 港股通沪 / 港股通深 等[web:108]
         df = df.rename(columns={
             "日期": "date",
             "当日成交净买额": "net_buy",
             "买入成交额": "buy_amount",
             "卖出成交额": "sell_amount",
-            "累计成交净买额": "cum_net_buy",
+            "累计成交净买额": "cum_net_buy"
         })
         df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values("date")
         return df[["date", "net_buy", "buy_amount", "sell_amount", "cum_net_buy"]]
     except Exception as e:
-        st.error(f"获取北向资金历史数据失败: {e}")
+        st.error(f"获取南向资金历史数据失败: {e}")
         return None
 
 @st.cache_data(ttl=3600)
 def get_hk_stock_price(hk_code: str, start: date, end: date):
-    """获取港股股价：输入 4-5 位数字代码（如 00700），自动转为 yfinance 代码."""
+    """
+    获取港股股价：输入 4-5 位数字代码（如 00700、09988），自动转为 yfinance 代码。
+    """
     try:
         code = hk_code.strip()
         if code.endswith(".HK"):
             yf_code = code
         else:
             if code.isdigit():
-                if len(code) == 5:   # 09988 -> 9988.HK
+                if len(code) == 5:       # 09988 -> 9988.HK
                     yf_code = code[1:] + ".HK"
-                elif len(code) == 4: # 0700 -> 0700.HK
+                elif len(code) == 4:     # 0700 -> 0700.HK
                     yf_code = code + ".HK"
                 else:
                     yf_code = code + ".HK"
@@ -67,8 +74,13 @@ def get_hk_stock_price(hk_code: str, start: date, end: date):
         st.warning(f"获取港股 {hk_code} 股价失败: {e}")
         return None
 
-# ================= 数据预处理为图表结构 =================
-def prepare_northbound_chart_data(df: pd.DataFrame):
+# ================= 数据预处理 =================
+def prepare_southbound_chart_data(df: pd.DataFrame):
+    """
+    转为 lightweight-charts 结构：
+    - flow：当日净买额柱状
+    - cumulative：累计净买额折线
+    """
     chart_data = {"flow": [], "cumulative": []}
     if df is None or df.empty:
         return chart_data
@@ -85,7 +97,7 @@ def prepare_northbound_chart_data(df: pd.DataFrame):
         chart_data["cumulative"].append({"time": d, "value": cum})
     return chart_data
 
-def prepare_stock_price_series(df: pd.DataFrame):
+def prepare_stock_series(df: pd.DataFrame):
     series = []
     if df is None or df.empty:
         return series
@@ -96,9 +108,11 @@ def prepare_stock_price_series(df: pd.DataFrame):
         })
     return series
 
-def create_northbound_charts(chart_data):
+# ================= 图表构建 =================
+def create_southbound_charts(chart_data):
     charts = []
 
+    # 当日净买额
     flow_chart = {
         "chart": {
             "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
@@ -114,12 +128,13 @@ def create_northbound_charts(chart_data):
             "data": chart_data["flow"],
             "options": {
                 "priceFormat": {"type": "price", "precision": 2, "minMove": 0.01},
-                "title": "北向资金当日成交净买额（亿元）"
+                "title": "南向资金当日成交净买额（亿元）"
             }
         }]
     }
     charts.append(flow_chart)
 
+    # 累计净买额
     cum_chart = {
         "chart": {
             "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
@@ -132,7 +147,7 @@ def create_northbound_charts(chart_data):
             "options": {
                 "color": "#3F51B5",
                 "lineWidth": 2,
-                "title": "北向资金累计成交净买额（亿元）"
+                "title": "南向资金累计成交净买额（亿元）"
             }
         }]
     }
@@ -157,7 +172,7 @@ def create_flow_vs_stock_charts(flow_chart_data, stock_series, hk_code: str):
             "data": flow_chart_data["flow"],
             "options": {
                 "priceFormat": {"type": "price", "precision": 2, "minMove": 0.01},
-                "title": "北向资金当日成交净买额（亿元）"
+                "title": "南向资金当日成交净买额（亿元）"
             }
         }]
     }
@@ -191,26 +206,31 @@ with st.sidebar:
     period_options = ["1个月", "3个月", "6个月", "1年", "全部历史"]
     period_choice = st.selectbox("时间范围", period_options, index=2)
 
-    hk_code = st.text_input("港股代码（可选）", value="00700", help="4-5 位数字，不带 .HK，如 00700、09988")
+    hk_code = st.text_input(
+        "港股代码（可选）",
+        value="00700",
+        help="4-5 位数字，不带 .HK，如 00700（腾讯）、09988（阿里）"
+    )
+
     st.markdown("---")
     st.markdown("### 数据说明")
     st.markdown(
-        "- 北向资金：AKShare `stock_hsgt_hist_em(symbol=\"北向资金\")`，单位为亿元人民币。[web:108]\n"
-        "- 港股股价：Yahoo Finance，单位为港元。"
+        "- 南向资金：AKShare `stock_hsgt_hist_em(symbol=\"南向资金\")`，单位为**亿元人民币**。[web:108][web:106]\n"
+        "- 股价：Yahoo Finance 港股日 K，单位为港元。"
     )
 
-tab1, tab2 = st.tabs(["📊 北向资金整体", "📈 北向资金 vs 港股股价"])
+tab1, tab2 = st.tabs(["📊 南下资金整体流向", "📈 南下资金 vs 港股股价"])
 
-# ================= Tab1：北向资金整体 =================
+# ================= Tab1：南向资金整体 =================
 with tab1:
-    st.subheader("北向资金历史净买额与累计净买额")
+    st.subheader("南向资金历史净买额与累计净买额")
 
-    if st.button("更新北向资金数据", type="primary", key="btn_nb"):
-        with st.spinner("正在获取北向资金历史数据..."):
-            df_all = get_northbound_hist()
+    if st.button("更新南向资金数据", type="primary", key="btn_south"):
+        with st.spinner("正在获取南向资金历史数据..."):
+            df_all = get_southbound_hist()
 
         if df_all is None or df_all.empty:
-            st.error("未获取到北向资金数据。")
+            st.error("未获取到南向资金数据。")
         else:
             if period_choice != "全部历史":
                 if period_choice == "1个月":
@@ -249,36 +269,36 @@ with tab1:
                 with c4:
                     st.metric("最大 / 最小单日净买额", f"{max_single:.2f} / {min_single:.2f}")
 
-                chart_data = prepare_northbound_chart_data(df)
-                charts = create_northbound_charts(chart_data)
-                st.subheader("北向资金流向图表")
-                renderLightweightCharts(charts, key="northbound_charts_only")
+                chart_data = prepare_southbound_chart_data(df)
+                charts = create_southbound_charts(chart_data)
+                st.subheader("南向资金流向图表")
+                renderLightweightCharts(charts, key="southbound_charts")
 
                 with st.expander("查看原始数据（最近 100 行）"):
                     st.dataframe(df.tail(100))
 
                 csv = df.to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    label="📥 下载北向资金数据 CSV",
+                    label="📥 下载南向资金数据 CSV",
                     data=csv,
-                    file_name=f"northbound_flow_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    file_name=f"southbound_flow_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv"
                 )
     else:
         st.info("👈 选择时间范围后点击按钮。")
 
-# ================= Tab2：北向资金 vs 港股股价 =================
+# ================= Tab2：南向资金 vs 港股股价 =================
 with tab2:
-    st.subheader("北向资金 vs 港股股价")
+    st.subheader("港股通南下资金 vs 港股股价")
 
-    if st.button("更新北向资金 + 港股数据", type="primary", key="btn_nb_stock"):
-        with st.spinner("正在获取数据..."):
-            df_all = get_northbound_hist()
+    if st.button("更新南向资金 + 股价数据", type="primary", key="btn_south_stock"):
+        with st.spinner("正在获取南向资金数据..."):
+            df_all = get_southbound_hist()
 
         if df_all is None or df_all.empty:
-            st.error("未获取到北向资金数据。")
+            st.error("未获取到南向资金数据。")
         else:
-            # 按时间范围剪裁
+            # 时间剪裁
             if period_choice != "全部历史":
                 if period_choice == "1个月":
                     days = 30
@@ -291,24 +311,24 @@ with tab2:
                 else:
                     days = 365
                 cutoff = datetime.today() - timedelta(days=days)
-                df_nb = df_all[df_all["date"] >= cutoff].copy()
+                df_s = df_all[df_all["date"] >= cutoff].copy()
             else:
-                df_nb = df_all.copy()
+                df_s = df_all.copy()
 
-            if df_nb.empty:
-                st.warning("北向资金筛选后为空。")
+            if df_s.empty:
+                st.warning("南向资金筛选后为空。")
             else:
-                start_d = df_nb["date"].min().date()
-                end_d = df_nb["date"].max().date() + timedelta(days=1)
+                start_d = df_s["date"].min().date()
+                end_d = df_s["date"].max().date() + timedelta(days=1)
 
                 with st.spinner(f"正在获取港股 {hk_code} 股价..."):
                     df_stock = get_hk_stock_price(hk_code, start_d, end_d)
 
                 if df_stock is None or df_stock.empty:
-                    st.warning(f"未获取到 {hk_code} 股价数据，只显示北向资金。")
+                    st.warning(f"未获取到 {hk_code} 股价数据，只显示南向资金。")
                     stock_series = []
                 else:
-                    stock_series = prepare_stock_price_series(df_stock)
+                    stock_series = prepare_stock_series(df_stock)
                     last_close = df_stock["Close"].iloc[-1]
                     prev_close = df_stock["Close"].iloc[-2] if len(df_stock) > 1 else last_close
                     pct = (last_close - prev_close) / prev_close * 100 if prev_close != 0 else 0
@@ -320,21 +340,21 @@ with tab2:
                     with c3:
                         st.metric("样本交易日数", f"{len(df_stock)}")
 
-                chart_data_nb = prepare_northbound_chart_data(df_nb)
-                charts_combo = create_flow_vs_stock_charts(chart_data_nb, stock_series, hk_code)
-                st.subheader("北向资金净买额 vs 港股收盘价")
-                renderLightweightCharts(charts_combo, key="northbound_vs_stock")
+                chart_south = prepare_southbound_chart_data(df_s)
+                charts_combo = create_flow_vs_stock_charts(chart_south, stock_series, hk_code)
+                st.subheader("南向资金净买额 vs 港股收盘价")
+                renderLightweightCharts(charts_combo, key="south_vs_stock")
 
-                with st.expander("查看北向 + 股价数据（最近 100 行）"):
+                with st.expander("查看合并数据（最近 100 行）"):
                     if df_stock is not None and not df_stock.empty:
                         df_merge = pd.merge(
-                            df_nb,
+                            df_s,
                             df_stock[["date", "Close"]],
                             on="date",
                             how="left"
                         ).rename(columns={"Close": f"{hk_code}_close"})
                         st.dataframe(df_merge.tail(100))
                     else:
-                        st.dataframe(df_nb.tail(100))
+                        st.dataframe(df_s.tail(100))
     else:
-        st.info("👈 输入港股代码后，点击按钮获取北向+股价数据。")
+        st.info("👈 输入港股代码后点击按钮，查看资金与股价联动。")

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import akshare as ak
 from datetime import datetime, timedelta
 from io import StringIO
 from streamlit_lightweight_charts import renderLightweightCharts
@@ -14,8 +15,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("📈 专业级技术分析平台（多周期 / 多标的 / 策略回测）")
-st.markdown("使用 Streamlit + Lightweight Charts + Yahoo Finance 构建的专业技术分析与简易回测终端")
+st.title("📈 专业级技术分析平台（多周期 / 多标的 / 策略回测 / 南向资金）")
+st.markdown("使用 Streamlit + Lightweight Charts + Yahoo Finance + AKShare 构建的专业技术分析与简易回测终端")
 
 # ================= 工具函数 =================
 @st.cache_data(ttl=3600)
@@ -39,6 +40,73 @@ def get_stock_data(ticker_symbol, period_str, interval="1d"):
         return df
     except Exception as e:
         st.error(f"{ticker_symbol} 获取数据失败: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def get_hk_stock_data(ticker_symbol, period_str):
+    """从 yfinance 获取港股数据"""
+    period_map = {
+        "1个月": "1mo",
+        "3个月": "3mo",
+        "6个月": "6mo",
+        "1年": "1y",
+        "2年": "2y",
+        "5年": "5y"
+    }
+    try:
+        # 港股代码格式处理 (如 00700 -> 0700.HK)
+        if ticker_symbol.isdigit():
+            if len(ticker_symbol) == 5:
+                ticker_symbol = ticker_symbol[1:] + ".HK"
+            elif len(ticker_symbol) == 4:
+                ticker_symbol = ticker_symbol + ".HK"
+        
+        stock = yf.Ticker(ticker_symbol)
+        df = stock.history(period=period_map[period_str], interval="1d")
+        if df.empty:
+            return None
+        df = df.reset_index()
+        df["Date"] = pd.to_datetime(df["Date"])
+        return df
+    except Exception as e:
+        st.error(f"{ticker_symbol} 获取数据失败: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def get_southbound_daily_flow():
+    """获取每日南向资金流向"""
+    try:
+        df = ak.stock_em_hsgt_north_net_flow_in(symbol="港股通")
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date")
+        return df
+    except Exception as e:
+        st.warning(f"获取南向资金流向失败: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def get_stock_hk_ggt_holdings(symbol):
+    """获取个股港股通持股数据"""
+    try:
+        df = ak.stock_hk_ggt_holdings_em(symbol=symbol)
+        if df is not None and not df.empty:
+            df["日期"] = pd.to_datetime(df["日期"])
+            df = df.sort_values("日期")
+        return df
+    except Exception as e:
+        st.warning(f"获取港股通持股数据失败: {e}")
+        return None
+
+@st.cache_data(ttl=3600)
+def get_hk_ggt_top_stocks(date_str=None):
+    """获取港股通十大成交股"""
+    try:
+        if date_str is None:
+            date_str = datetime.now().strftime("%Y%m%d")
+        df = ak.stock_hk_ggt_top_10_em(symbol="港股通", date=date_str)
+        return df
+    except Exception as e:
+        st.warning(f"获取港股通十大成交股失败: {e}")
         return None
 
 def resample_ohlcv(df, timeframe="D"):
@@ -368,6 +436,80 @@ def prepare_chart_data(
 
     return chart_data, df_tf
 
+# ================= 南向资金图表数据准备 =================
+def prepare_southbound_chart_data(flow_df, stock_df=None):
+    """准备南向资金流向图表数据"""
+    chart_data = {
+        "flow": [],
+        "cumulative": [],
+        "stock_price": []
+    }
+    
+    if flow_df is None or flow_df.empty:
+        return chart_data
+    
+    # 计算累计净流入
+    flow_df["cumulative"] = flow_df["north_net_flow_in"].cumsum()
+    
+    for _, row in flow_df.iterrows():
+        date_str = row["date"].strftime("%Y-%m-%d")
+        chart_data["flow"].append({
+            "time": date_str,
+            "value": float(row["north_net_flow_in"]) if pd.notna(row["north_net_flow_in"]) else 0,
+            "color": "rgba(38, 166, 154, 0.8)" if row["north_net_flow_in"] > 0 else "rgba(239, 83, 80, 0.8)"
+        })
+        chart_data["cumulative"].append({
+            "time": date_str,
+            "value": float(row["cumulative"]) if pd.notna(row["cumulative"]) else 0
+        })
+    
+    # 合并股价数据
+    if stock_df is not None and not stock_df.empty:
+        for _, row in stock_df.iterrows():
+            date_str = row["Date"].strftime("%Y-%m-%d")
+            chart_data["stock_price"].append({
+                "time": date_str,
+                "value": float(row["Close"])
+            })
+    
+    return chart_data
+
+def prepare_holdings_chart_data(holdings_df, stock_df=None):
+    """准备持股数据图表"""
+    chart_data = {
+        "holdings_pct": [],
+        "holdings_shares": [],
+        "stock_price": []
+    }
+    
+    if holdings_df is None or holdings_df.empty:
+        return chart_data
+    
+    for _, row in holdings_df.iterrows():
+        if pd.notna(row.get("日期")):
+            date_str = row["日期"].strftime("%Y-%m-%d")
+            if pd.notna(row.get("持股比例")):
+                chart_data["holdings_pct"].append({
+                    "time": date_str,
+                    "value": float(row["持股比例"])
+                })
+            if pd.notna(row.get("持股数量")):
+                chart_data["holdings_shares"].append({
+                    "time": date_str,
+                    "value": float(row["持股数量"]) / 1e8  # 转换为亿股
+                })
+    
+    # 合并股价数据
+    if stock_df is not None and not stock_df.empty:
+        for _, row in stock_df.iterrows():
+            date_str = row["Date"].strftime("%Y-%m-%d")
+            chart_data["stock_price"].append({
+                "time": date_str,
+                "value": float(row["Close"])
+            })
+    
+    return chart_data
+
 # ================= 构建 charts 列表 =================
 def create_charts(
     chart_data,
@@ -558,6 +700,140 @@ def create_charts(
 
     return charts
 
+def create_southbound_flow_charts(chart_data, show_cumulative=True, show_stock=True):
+    """创建南向资金流向图表"""
+    charts = []
+    
+    # 主图：南向资金净流入
+    flow_chart = {
+        "chart": {
+            "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
+            "grid": {
+                "vertLines": {"color": "rgba(197, 203, 206, 0.3)"},
+                "horzLines": {"color": "rgba(197, 203, 206, 0.3)"}
+            },
+            "width": 1000,
+            "height": 300
+        },
+        "series": [{
+            "type": "Histogram",
+            "data": chart_data["flow"],
+            "options": {
+                "priceFormat": {"type": "price", "precision": 2, "minMove": 0.01},
+                "title": "南向资金净流入(亿港元)"
+            }
+        }]
+    }
+    charts.append(flow_chart)
+    
+    # 累计净流入
+    if show_cumulative and chart_data["cumulative"]:
+        cum_chart = {
+            "chart": {
+                "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
+                "width": 1000,
+                "height": 200
+            },
+            "series": [{
+                "type": "Line",
+                "data": chart_data["cumulative"],
+                "options": {
+                    "color": "#3F51B5",
+                    "lineWidth": 2,
+                    "title": "累计净流入(亿港元)"
+                }
+            }]
+        }
+        charts.append(cum_chart)
+    
+    # 股价对比
+    if show_stock and chart_data["stock_price"]:
+        price_chart = {
+            "chart": {
+                "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
+                "width": 1000,
+                "height": 200
+            },
+            "series": [{
+                "type": "Line",
+                "data": chart_data["stock_price"],
+                "options": {
+                    "color": "#FF5722",
+                    "lineWidth": 2,
+                    "title": "股价(港元)"
+                }
+            }]
+        }
+        charts.append(price_chart)
+    
+    return charts
+
+def create_holdings_charts(chart_data):
+    """创建持股数据图表"""
+    charts = []
+    
+    # 持股比例
+    if chart_data["holdings_pct"]:
+        pct_chart = {
+            "chart": {
+                "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
+                "width": 1000,
+                "height": 250
+            },
+            "series": [{
+                "type": "Line",
+                "data": chart_data["holdings_pct"],
+                "options": {
+                    "color": "#4CAF50",
+                    "lineWidth": 2,
+                    "title": "港股通持股比例(%)"
+                }
+            }]
+        }
+        charts.append(pct_chart)
+    
+    # 持股数量
+    if chart_data["holdings_shares"]:
+        shares_chart = {
+            "chart": {
+                "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
+                "width": 1000,
+                "height": 200
+            },
+            "series": [{
+                "type": "Line",
+                "data": chart_data["holdings_shares"],
+                "options": {
+                    "color": "#2196F3",
+                    "lineWidth": 2,
+                    "title": "持股数量(亿股)"
+                }
+            }]
+        }
+        charts.append(shares_chart)
+    
+    # 股价对比
+    if chart_data["stock_price"]:
+        price_chart = {
+            "chart": {
+                "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
+                "width": 1000,
+                "height": 200
+            },
+            "series": [{
+                "type": "Line",
+                "data": chart_data["stock_price"],
+                "options": {
+                    "color": "#FF5722",
+                    "lineWidth": 2,
+                    "title": "股价(港元)"
+                }
+            }]
+        }
+        charts.append(price_chart)
+    
+    return charts
+
 # ================= 侧边栏参数 =================
 with st.sidebar:
     st.header("⚙️ 全局参数")
@@ -598,9 +874,13 @@ with st.sidebar:
 
     st.subheader("多标的对比（归一化）")
     multi_tickers = st.text_input("输入多个代码（逗号分隔）", value="AAPL,MSFT,NVDA")
+    
+    st.markdown("---")
+    st.subheader("💹 南向资金参数")
+    hk_ticker = st.text_input("港股代码", value="00700", help="如 00700(腾讯)、09988(阿里)")
 
 # ================= 主体 Tabs =================
-tab1, tab2 = st.tabs(["📊 单标的技术分析 & 策略", "📈 多标的相对强弱"])
+tab1, tab2, tab3 = st.tabs(["📊 单标的技术分析 & 策略", "📈 多标的相对强弱", "💹 南向资金流向"])
 
 # ---------- Tab 1：单标的 ----------
 with tab1:
@@ -662,130 +942,4 @@ with tab1:
                 # 策略回测
                 if bt_enable:
                     st.subheader("📉 简易 SMA 交叉策略回测（基于原始日线）")
-                    bt_df, trades = backtest_sma_cross(df, short=bt_short, long=bt_long)
-                    eq_chart_data = []
-                    for _, row in bt_df.iterrows():
-                        eq_chart_data.append({
-                            "time": row["Date"].strftime("%Y-%m-%d"),
-                            "value": float(row["equity"])
-                        })
-                    eq_chart = [{
-                        "chart": {
-                            "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
-                            "width": 1000,
-                            "height": 200
-                        },
-                        "series": [{
-                            "type": "Line",
-                            "data": eq_chart_data,
-                            "options": {"color": "#3F51B5", "lineWidth": 2, "title": "Equity Curve"}
-                        }]
-                    }]
-                    renderLightweightCharts(eq_chart, key="equity_chart")
-
-                    total_return = bt_df["equity"].iloc[-1] - 1
-                    max_dd = ((bt_df["equity"].cummax() - bt_df["equity"]) / bt_df["equity"].cummax()).max()
-                    st.write(f"策略总收益: {total_return*100:.2f}% | 最大回撤: {max_dd*100:.2f}%")
-
-                    with st.expander("查看交易点（信号变化点）"):
-                        st.dataframe(trades[["Date", "position"]].tail(20))
-
-                # TD 信号摘要
-                if show_td and chart_data["td_signals"]:
-                    st.subheader("📊 TD Sequential 信号（最近 5 个）")
-                    recent_signals = chart_data["td_signals"][-5:]
-                    for signal in recent_signals:
-                        if "Buy" in signal["type"]:
-                            st.success(f"📈 {signal['time']}: {signal['type']} @ {signal['value']:.2f}")
-                        else:
-                            st.error(f"📉 {signal['time']}: {signal['type']} @ {signal['value']:.2f}")
-
-                # 数据表 & 下载
-                with st.expander("查看原始数据"):
-                    st.dataframe(df.tail(50))
-
-                csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="📥 下载原始 CSV",
-                    data=csv,
-                    file_name=f"{ticker}_stock_data.csv",
-                    mime="text/csv"
-                )
-
-                # 研究笔记
-                st.markdown("---")
-                st.subheader("📝 交易 / 研究笔记")
-                note = st.text_area("在此记录你的盘后总结 / 交易计划 / 研究发现：", height=150)
-                if st.button("导出为 Markdown"):
-                    buf = StringIO()
-                    buf.write(f"# {ticker} 技术分析笔记\n\n")
-                    buf.write(f"- 日期：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-                    buf.write(f"- 周期：{timeframe}\n")
-                    buf.write(f"- 使用指标：SMA={show_sma}, RSI={show_rsi}, TD={show_td}, BB={show_bb}, MACD={show_macd}\n\n")
-                    buf.write("## 笔记内容\n\n")
-                    buf.write(note if note.strip() else "（尚未填写）\n")
-                    md_bytes = buf.getvalue().encode("utf-8")
-                    st.download_button(
-                        label="📄 下载 Markdown 笔记",
-                        data=md_bytes,
-                        file_name=f"{ticker}_note_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                        mime="text/markdown"
-                    )
-            else:
-                st.error("无法获取股票数据，请检查代码或时间范围")
-    else:
-        st.info("👈 点击左上角按钮生成图表与回测")
-
-# ---------- Tab 2：多标的对比 ----------
-with tab2:
-    st.subheader("多标的归一化收盘价对比（相对强弱）")
-    if st.button("更新多标的图表", key="multi_btn"):
-        syms = [s.strip().upper() for s in multi_tickers.split(",") if s.strip()]
-        if not syms:
-            st.error("请输入至少一个代码")
-        else:
-            series_map = {}
-            dates_union = None
-            for sym in syms:
-                df_sym = get_stock_data(sym, period)
-                if df_sym is None or df_sym.empty:
-                    st.warning(f"{sym} 数据为空，已跳过")
-                    continue
-                df_sym = df_sym[["Date", "Close"]].copy()
-                df_sym.set_index("Date", inplace=True)
-                df_sym[f"{sym}_norm"] = df_sym["Close"] / df_sym["Close"].iloc[0]
-                series_map[sym] = df_sym[f"{sym}_norm"]
-                if dates_union is None:
-                    dates_union = df_sym.index
-                else:
-                    dates_union = dates_union.union(df_sym.index)
-
-            if not series_map:
-                st.error("所有代码数据均为空，无法绘图")
-            else:
-                multi_series = []
-                color_pool = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#3F51B5", "#FF5722"]
-                for idx, (sym, s) in enumerate(series_map.items()):
-                    s = s.reindex(dates_union).ffill()
-                    data = []
-                    for date, val in s.items():
-                        data.append({"time": date.strftime("%Y-%m-%d"), "value": float(val)})
-                    multi_series.append({
-                        "type": "Line",
-                        "data": data,
-                        "options": {
-                            "color": color_pool[idx % len(color_pool)],
-                            "lineWidth": 2,
-                            "title": sym
-                        }
-                    })
-
-                chart_multi = [{
-                    "chart": {
-                        "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
-                        "width": 1000,
-                        "height": 500
-                    },
-                    "series": multi_series
-                }]
-                renderLightweightCharts(chart_multi, key="multi_chart")
+                    bt_df, trades = backtest_sma

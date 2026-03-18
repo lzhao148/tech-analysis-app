@@ -29,15 +29,13 @@ def settings_page():
     # 您原有的设置功能...
     # 例如：参数配置、主题设置等
 
-# 创建导航
+# 创建页面映射
 pages = {
-    "主页": st.Page(home_page, icon="🏠"),
-    "单标的分析": st.Page(single_stock_analysis, icon="📊"),
-    "多标的分析": st.Page(multi_stock_analysis, icon="📈"),
-    "南向资金": st.Page(southbound_flow, icon="💹"),
-    "设置": st.Page(settings_page, icon="⚙")
+    "主页": st.Page(home_page, title="主页", icon="🏠"),
+    "数据分析": st.Page(data_analysis_page, title="数据分析", icon="📈"),
+    "可视化": st.Page(visualization_page, title="可视化", icon="📊"),
+    "设置": st.Page(settings_page, title="设置", icon="⚙️")
 }
-
 
 # 显示导航
 pg = st.navigation(pages)

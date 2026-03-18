@@ -13,12 +13,6 @@ st.set_page_config(
 def home_page():
     st.title("技术分析应用 - 主页")
     st.write("欢迎使用技术分析应用！请选择左侧的页面开始分析。")
-iimpaort streamlit a s stimport streamlit as st
-import pandas
-
-import pandmport streamlit as st 
-import pandas
- 
 
 def data_analysis_page():
     st.title("数据分析")
@@ -35,9 +29,15 @@ def settings_page():
     # 您原有的设置功能...
     # 例如：参数配置、主题设置等
 
-# 创建页面映射
-设置", icon="⚙️")
+# 创建导航
+pages = {
+    "主页": st.Page(home_page, icon="🏠"),
+    "单标的分析": st.Page(single_stock_analysis, icon="📊"),
+    "多标的分析": st.Page(multi_stock_analysis, icon="📈"),
+    "南向资金": st.Page(southbound_flow, icon="💹"),
+    "设置": st.Page(settings_page, icon="⚙")
 }
+
 
 # 显示导航
 pg = st.navigation(pages)

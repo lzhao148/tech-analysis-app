@@ -13,7 +13,12 @@ st.set_page_config(
 def home_page():
     st.title("技术分析应用 - 主页")
     st.write("欢迎使用技术分析应用！请选择左侧的页面开始分析。")
-    # 您原有的主页内容...
+iimpaort streamlit a s stimport streamlit as st
+import pandas
+
+import pandmport streamlit as st 
+import pandas
+ 
 
 def data_analysis_page():
     st.title("数据分析")
@@ -31,11 +36,7 @@ def settings_page():
     # 例如：参数配置、主题设置等
 
 # 创建页面映射
-pages = {
-    "主页": st.Page(home_page, title="主页", icon="🏠"),
-    "数据分析": st.Page(data_analysis_page, title="数据分析", icon="📈"),
-    "可视化": st.Page(visualization_page, title="可视化", icon="📊"),
-    "设置": st.Page(settings_page, title="设置", icon="⚙️")
+设置", icon="⚙️")
 }
 
 # 显示导航

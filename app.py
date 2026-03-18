@@ -39,5 +39,5 @@ pages = {
 }
 
 # 显示导航
-pg = st.navigation(pages.values())
+pg = st.navigation(pages)
 pg.run()

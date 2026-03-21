@@ -88,10 +88,20 @@ run_button = st.sidebar.button("Run Scanner")
 
 # Data fetch using yfinance
 @st.cache_data(show_spinner=True)
-def load_data(symbol, start, end):
-    df = yf.download(symbol, start=start, end=end, progress=False)
-    return df["Adj Close"].dropna()
-
+ef load_data(symbol, start, end):
+    # Explicitly disable auto_adjust so 'Adj Close' is present
+    df = yf.download(
+        symbol,
+        start=start,
+        end=end,
+        progress=False,
+        auto_adjust=False,   # <-- important
+    )
+    # Fallback: if 'Adj Close' missing, use 'Close'
+    if "Adj Close" in df.columns:
+        return df["Adj Close"].dropna()
+    else:
+        return df["Close"].dropna()
 if run_button:
     try:
         prices = load_data(symbol, start_date, end_date)

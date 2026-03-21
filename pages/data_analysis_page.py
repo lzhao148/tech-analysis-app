@@ -30,6 +30,10 @@ def goertzel_complex(x, k):
     return real_part + 1j * imag_part
 
 def goertzel_power_amp_phase(x, period):
+    """
+    Compute power, amplitude, phase for a given period using Goertzel.
+    period : integer wavelength in bars
+    """
     N = len(x)
     freq = 1.0 / period
     k = int(round(freq * N))
@@ -46,6 +50,12 @@ def goertzel_power_amp_phase(x, period):
 # Simplified Bartels-like test
 # -----------------------------
 def bartels_like_score(x, period, phase):
+    """
+    Very simplified 'genuineness' metric:
+    - Construct a sine with given period/phase
+    - Correlate with detrended signal
+    - Return 1 - |rho|, so lower is 'more genuine'
+    """
     N = len(x)
     t = np.arange(N)
     sine_wave = np.sin(2 * np.pi * t / period + phase)
@@ -64,8 +74,8 @@ st.set_page_config(page_title="Cycle Scanner for Oil", layout="wide")
 
 st.title("Cycle Scanner – WTI Oil Example (yfinance)")
 st.markdown(
-    "Four‑step Cycle Scanner prototype: HP detrending → Goertzel DFT → "
-    "Bartels‑style validation → cycle strength ranking.[page:1]"
+    "Four-step Cycle Scanner prototype based on the FSC whitepaper: "
+    "HP detrending → Goertzel DFT → Bartels-style validation → cycle strength ranking.[page:1]"
 )
 
 # Sidebar controls
@@ -75,33 +85,48 @@ symbol = st.sidebar.text_input("Yahoo symbol", value="CL=F")
 start_date = st.sidebar.date_input("Start date", dt.date(2015, 1, 1))
 end_date = st.sidebar.date_input("End date", dt.date.today())
 
-hp_lambda = st.sidebar.number_input("HP filter λ", min_value=10.0, max_value=50000.0,
-                                    value=1600.0, step=100.0)
-min_period = st.sidebar.number_input("Min period", min_value=5, max_value=1000,
-                                     value=10, step=1)
-max_period = st.sidebar.number_input("Max period", min_value=5, max_value=2000,
-                                     value=250, step=5)
+hp_lambda = st.sidebar.number_input(
+    "HP filter λ", min_value=10.0, max_value=50000.0, value=1600.0, step=100.0
+)
+min_period = st.sidebar.number_input(
+    "Min period", min_value=5, max_value=1000, value=10, step=1
+)
+max_period = st.sidebar.number_input(
+    "Max period", min_value=5, max_value=2000, value=250, step=5
+)
 
-genuine_threshold = st.sidebar.slider("Genuine % threshold", 0.0, 100.0, 49.0, 1.0)
+genuine_threshold = st.sidebar.slider(
+    "Genuine % threshold", 0.0, 100.0, 49.0, 1.0
+)
 
 run_button = st.sidebar.button("Run Scanner")
 
+# -----------------------------
 # Data fetch using yfinance
+# -----------------------------
 @st.cache_data(show_spinner=True)
-ef load_data(symbol, start, end):
-    # Explicitly disable auto_adjust so 'Adj Close' is present
+def load_data(symbol, start, end):
+    # auto_adjust=False so yfinance returns 'Adj Close' column when available.[web:2][web:4]
     df = yf.download(
         symbol,
         start=start,
         end=end,
         progress=False,
-        auto_adjust=False,   # <-- important
+        auto_adjust=False,
     )
-    # Fallback: if 'Adj Close' missing, use 'Close'
+    if df.empty:
+        raise ValueError("Downloaded data is empty. Check symbol or dates.")
+    # Fallback: if Adj Close missing, use Close
     if "Adj Close" in df.columns:
         return df["Adj Close"].dropna()
-    else:
+    elif "Close" in df.columns:
         return df["Close"].dropna()
+    else:
+        raise ValueError(f"No 'Adj Close' or 'Close' column in data. Columns: {df.columns.tolist()}")
+
+# -----------------------------
+# Main logic
+# -----------------------------
 if run_button:
     try:
         prices = load_data(symbol, start_date, end_date)
@@ -111,6 +136,7 @@ if run_button:
 
     st.subheader("Price and HP detrending")
 
+    # Step 1: detrending (HP filter as in Cycle Scanner framework)[page:1]
     cycle, trend = hpfilter(prices, lamb=hp_lambda)
     detrended = cycle
     df_plot = pd.DataFrame(
@@ -123,6 +149,7 @@ if run_button:
     x = detrended.values.astype(float)
     N = len(x)
 
+    # Steps 2–4: cycle detection, validation, ranking[page:1]
     rows = []
     st.subheader("Scanning cycles...")
     progress = st.progress(0)
@@ -137,13 +164,13 @@ if run_button:
 
         power, amplitude, phase = res
         bartels_score = bartels_like_score(x, period, phase)
-        genuine_pct = (1.0 - bartels_score) * 100.0
+        genuine_pct = (1.0 - bartels_score) * 100.0  # Cycle Genuine % in paper’s sense[page:1]
 
         if genuine_pct < genuine_threshold:
             progress.progress((i + 1) / total)
             continue
 
-        strength = amplitude / period
+        strength = amplitude / period  # Cycle Strength = amplitude / wavelength[page:1]
 
         rows.append(
             {

@@ -1,169 +1,174 @@
+# streamlit_cycle_scanner_oil_yf.py
+
+import numpy as np
+import pandas as pd
+import datetime as dt
+
 import streamlit as st
 import yfinance as yf
-import pandas as pd
-import numpy as np
-import talib
+from statsmodels.tsa.filters.hp_filter import hpfilter
 
-st.title("📊 个股技术分析")
-st.markdown("---")
+# -----------------------------
+# Goertzel helpers
+# -----------------------------
+def goertzel_complex(x, k):
+    N = len(x)
+    w = 2 * np.pi * k / N
+    cosine = np.cos(w)
+    sine = np.sin(w)
+    coeff = 2 * cosine
 
-# 股票代码输入
-stock_code = st.text_input("请输入股票代码（如：AAPL, GOOGL, 600000.SS）", "AAPL")
+    s_prev = 0.0
+    s_prev2 = 0.0
+    for n in x:
+        s = n + coeff * s_prev - s_prev2
+        s_prev2 = s_prev
+        s_prev = s
 
-# 时间范围选择
-time_range = st.selectbox(
-    "选择时间范围",
-    ["1个月", "3个月", "6个月", "1年", "3年", "5年", "全部"]
+    real_part = s_prev - s_prev2 * cosine
+    imag_part = s_prev2 * sine
+    return real_part + 1j * imag_part
+
+def goertzel_power_amp_phase(x, period):
+    N = len(x)
+    freq = 1.0 / period
+    k = int(round(freq * N))
+    if k <= 0 or k >= N:
+        return None
+
+    Xk = goertzel_complex(x, k)
+    power = (np.abs(Xk) ** 2) / N
+    amplitude = 2 * np.abs(Xk) / N
+    phase = np.angle(Xk)
+    return power, amplitude, phase
+
+# -----------------------------
+# Simplified Bartels-like test
+# -----------------------------
+def bartels_like_score(x, period, phase):
+    N = len(x)
+    t = np.arange(N)
+    sine_wave = np.sin(2 * np.pi * t / period + phase)
+
+    x_std = (x - x.mean()) / (x.std() + 1e-8)
+    s_std = (sine_wave - sine_wave.mean()) / (sine_wave.std() + 1e-8)
+    rho = np.dot(x_std, s_std) / N
+    rho = np.clip(rho, -1, 1)
+    score = 1.0 - abs(rho)
+    return score
+
+# -----------------------------
+# Streamlit app
+# -----------------------------
+st.set_page_config(page_title="Cycle Scanner for Oil", layout="wide")
+
+st.title("Cycle Scanner – WTI Oil Example (yfinance)")
+st.markdown(
+    "Four‑step Cycle Scanner prototype: HP detrending → Goertzel DFT → "
+    "Bartels‑style validation → cycle strength ranking.[page:1]"
 )
 
-# 转换时间范围为yfinance格式
-time_map = {
-    "1个月": "1mo",
-    "3个月": "3mo", 
-    "6个月": "6mo",
-    "1年": "1y",
-    "3年": "3y",
-    "5年": "5y",
-    "全部": "max"
-}
+# Sidebar controls
+st.sidebar.header("Parameters")
+
+symbol = st.sidebar.text_input("Yahoo symbol", value="CL=F")
+start_date = st.sidebar.date_input("Start date", dt.date(2015, 1, 1))
+end_date = st.sidebar.date_input("End date", dt.date.today())
+
+hp_lambda = st.sidebar.number_input("HP filter λ", min_value=10.0, max_value=50000.0,
+                                    value=1600.0, step=100.0)
+min_period = st.sidebar.number_input("Min period", min_value=5, max_value=1000,
+                                     value=10, step=1)
+max_period = st.sidebar.number_input("Max period", min_value=5, max_value=2000,
+                                     value=250, step=5)
+
+genuine_threshold = st.sidebar.slider("Genuine % threshold", 0.0, 100.0, 49.0, 1.0)
+
+run_button = st.sidebar.button("Run Scanner")
+
+# Data fetch using yfinance
+@st.cache_data(show_spinner=True)
+def load_data(symbol, start, end):
+    df = yf.download(symbol, start=start, end=end, progress=False)
+    return df["Adj Close"].dropna()
+
+if run_button:
+    try:
+        prices = load_data(symbol, start_date, end_date)
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        st.stop()
+
+    st.subheader("Price and HP detrending")
+
+    cycle, trend = hpfilter(prices, lamb=hp_lambda)
+    detrended = cycle
+    df_plot = pd.DataFrame(
+        {"Price": prices, "Trend (HP)": trend, "Detrended (cycle)": detrended}
+    )
+
+    st.line_chart(df_plot[["Price", "Trend (HP)"]])
+    st.line_chart(df_plot[["Detrended (cycle)"]])
+
+    x = detrended.values.astype(float)
+    N = len(x)
+
+    rows = []
+    st.subheader("Scanning cycles...")
+    progress = st.progress(0)
+    periods = list(range(int(min_period), int(max_period) + 1))
+    total = len(periods)
+
+    for i, period in enumerate(periods):
+        res = goertzel_power_amp_phase(x, period)
+        if res is None:
+            progress.progress((i + 1) / total)
+            continue
+
+        power, amplitude, phase = res
+        bartels_score = bartels_like_score(x, period, phase)
+        genuine_pct = (1.0 - bartels_score) * 100.0
+
+        if genuine_pct < genuine_threshold:
+            progress.progress((i + 1) / total)
+            continue
+
+        strength = amplitude / period
+
+        rows.append(
+            {
+                "period": period,
+                "power": power,
+                "amplitude": amplitude,
+                "phase_rad": phase,
+                "bartels_score": bartels_score,
+                "genuine_pct": genuine_pct,
+                "cycle_strength": strength,
+            }
+        )
+        progress.progress((i + 1) / total)
+
+    if not rows:
+        st.warning(
+            "No cycles passed the genuineness threshold. "
+            "Try lowering the threshold or changing the date range."
+        )
+        st.stop()
+
+    res_df = pd.DataFrame(rows).sort_values("cycle_strength", ascending=False)
+
+    st.subheader("Top dominant cycles")
+    st.dataframe(res_df.head(20))
+
+    st.subheader("Cycle strength vs period")
+    st.line_chart(res_df.set_index("period")["cycle_strength"])
+
+    st.download_button(
+        "Download cycle table as CSV",
+        data=res_df.to_csv(index=False),
+        file_name="oil_cycle_scanner_results.csv",
+        mime="text/csv",
+    )
 
-# 获取股票数据
-if st.button("获取数据"):
-    with st.spinner("正在获取股票数据..."):
-        try:
-            stock = yf.Ticker(stock_code)
-            hist = stock.history(period=time_map[time_range])
-            
-            if hist.empty:
-                st.error("无法获取股票数据，请检查股票代码是否正确。")
-            else:
-                st.success(f"成功获取 {stock_code} 的数据！")
-                
-                # 显示基本信息
-                st.subheader("📋 基本信息")
-                st.write(f"公司名称: {stock.info.get('longName', '未知')}")
-                st.write(f"行业: {stock.info.get('industry', '未知')}")
-                st.write(f"当前价格: ${stock.info.get('currentPrice', '未知')}")
-                
-                # 显示K线图
-                st.subheader("📈 K线图")
-                st.line_chart(hist[['Close']], use_container_width=True)
-                
-                # 计算技术指标
-                st.subheader("🎯 技术指标")
-                
-                # MACD
-                macd, macdsignal, macdhist = talib.MACD(hist['Close'])
-                st.line_chart(pd.DataFrame({
-                    'MACD': macd,
-                    'Signal': macdsignal
-                }).dropna(), use_container_width=True)
-                
-                # RSI
-                rsi = talib.RSI(hist['Close'])
-                st.line_chart(rsi.dropna(), use_container_width=True)
-                
-                # BOLL
-                upper, middle, lower = talib.BBANDS(hist['Close'])
-                st.line_chart(pd.DataFrame({
-                    'Upper': upper,
-                    'Middle': middle,
-                    'Lower': lower
-                }).dropna(), use_container_width=True)
-                
-                # 显示买卖信号
-                st.subheader("📊 买卖信号")
-                last_macd = macd.iloc[-1]
-                last_signal = macdsignal.iloc[-1]
-                last_rsi = rsi.iloc[-1]
-                
-                if last_macd > last_signal and last_rsi < 30:
-                    st.success("✅ 买入信号：金叉且RSI超卖")
-                elif last_macd < last_signal and last_rsi > 70:
-                    st.error("❌ 卖出信号：死叉且RSI超买")
-                else:
-                    st.info("ℹ️ 持有信号：无明确买卖信号")
-                    
-        except Exception as e:
-            st.error(f"获取数据时出错：{e}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+else:
+    st.info("Set parameters on the left and click **Run Scanner** to compute dominant cycles.")

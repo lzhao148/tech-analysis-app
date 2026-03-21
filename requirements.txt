@@ -6,4 +6,4 @@ plotly>=5.17.0
 streamlit-lightweight-charts>=0.1.6
 streamlit-lightweight-charts-ntf
 akshare
-talib
+statsmodels

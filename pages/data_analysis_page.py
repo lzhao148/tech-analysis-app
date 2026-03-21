@@ -136,18 +136,23 @@ if run_button:
 
     st.subheader("Price and HP detrending")
 
-    # Step 1: detrending (HP filter as in Cycle Scanner framework)[page:1]
-    cycle, trend = hpfilter(prices, lamb=hp_lambda)
-    detrended = cycle
-    df_plot = pd.DataFrame(
-        {"Price": prices, "Trend (HP)": trend, "Detrended (cycle)": detrended}
-    )
+    # Step 1: detrending
+cycle, trend = hpfilter(prices, lamb=hp_lambda)
 
-    st.line_chart(df_plot[["Price", "Trend (HP)"]])
-    st.line_chart(df_plot[["Detrended (cycle)"]])
+# Ensure all are 1D pandas Series with same index
+prices_s = pd.Series(prices.squeeze(), index=prices.index, name="Price")
+trend_s = pd.Series(np.asarray(trend).squeeze(), index=prices.index, name="Trend (HP)")
+detrended_s = pd.Series(np.asarray(cycle).squeeze(), index=prices.index, name="Detrended (cycle)")
 
-    x = detrended.values.astype(float)
-    N = len(x)
+df_plot = pd.concat([prices_s, trend_s, detrended_s], axis=1)
+
+st.line_chart(df_plot[["Price", "Trend (HP)"]])
+st.line_chart(df_plot[["Detrended (cycle)"]])
+
+# Use detrended_s for subsequent steps
+x = detrended_s.values.astype(float)
+N = len(x)
+
 
     # Steps 2–4: cycle detection, validation, ranking[page:1]
     rows = []

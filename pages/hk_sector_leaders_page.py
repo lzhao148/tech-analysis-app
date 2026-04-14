@@ -263,18 +263,63 @@ def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
 #  Plotly 图表构建
 # ============================================================
 
+def calc_rrg_series(df: pd.DataFrame, benchmark_df: pd.DataFrame, window: int = 10):
+    """
+    计算单只股票的 RS-Ratio 和 RS-Momentum 时间序列（标准 JdK）
+    返回 (rs_ratio_series, rs_momentum_series)，长度与 df 一致
+    """
+    n = min(len(df), len(benchmark_df))
+    close = df["Close"].values[-n:]
+    bench_close = benchmark_df["Close"].values[-n:]
+
+    rs_raw = close / bench_close
+    rs_sma = pd.Series(rs_raw).rolling(window=window).mean().values
+
+    rs_ratio_raw = rs_raw / rs_sma
+    rs_ratio = pd.Series(rs_ratio_raw).rolling(window=window).mean().values
+
+    rs_ratio_sma = pd.Series(rs_ratio).rolling(window=window).mean().values
+    rs_mom_raw = rs_ratio / rs_ratio_sma
+    rs_momentum = pd.Series(rs_mom_raw).rolling(window=window).mean().values
+
+    # 前面填充 NaN 使长度与 df 一致
+    pad = len(df) - n
+    rs_ratio_full = np.concatenate([np.full(pad, np.nan), rs_ratio]) * 100
+    rs_momentum_full = np.concatenate([np.full(pad, np.nan), rs_momentum]) * 100
+
+    return rs_ratio_full, rs_momentum_full
+
+
 def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                       show_ma: bool = True, show_boll: bool = False,
-                      show_volume: bool = True, show_td: bool = False) -> go.Figure:
+                      show_volume: bool = True, show_td: bool = False,
+                      show_rrg: bool = False, benchmark_df: pd.DataFrame = None) -> go.Figure:
     """
     构建单只股票的K线图表（Plotly）
     返回 plotly Figure 对象
     """
-    # 带成交量子图
-    rows = 2 if show_volume else 1
-    row_heights = [0.75, 0.25] if show_volume else [1.0]
+    # 子图行数与布局
+    n_rows = 1  # K线
+    if show_volume:
+        n_rows += 1
+    if show_rrg:
+        n_rows += 2  # RS-Ratio + RS-Momentum
+
+    if show_rrg and show_volume:
+        row_heights = [0.40, 0.12, 0.12, 0.10]
+        row_kline, row_rs_ratio, row_rs_mom, row_vol = 1, 2, 3, 4
+    elif show_rrg:
+        row_heights = [0.55, 0.15, 0.15]
+        row_kline, row_rs_ratio, row_rs_mom = 1, 2, 3
+    elif show_volume:
+        row_heights = [0.75, 0.25]
+        row_kline, row_vol = 1, 2
+    else:
+        row_heights = [1.0]
+        row_kline = 1
+
     fig = make_subplots(
-        rows=rows, cols=1,
+        rows=n_rows, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.03,
         row_heights=row_heights,
@@ -289,7 +334,7 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
         increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
         increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
         showlegend=False,
-    ), row=1, col=1)
+    ), row=row_kline, col=1)
 
     # 2. 均线
     if show_ma:
@@ -299,7 +344,7 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                 x=dates, y=ma, mode="lines",
                 line=dict(color=color, width=1),
                 showlegend=False, hovertemplate=f"MA{window}: %{{y:.2f}}<extra></extra>",
-            ), row=1, col=1)
+            ), row=row_kline, col=1)
 
     # 3. 布林带
     if show_boll:
@@ -308,18 +353,18 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
             x=dates, y=upper, mode="lines",
             line=dict(color="rgba(255,152,0,0.5)", width=1, dash="dash"),
             showlegend=False, hovertemplate="BOLL-UP: %{y:.2f}<extra></extra>",
-        ), row=1, col=1)
+        ), row=row_kline, col=1)
         fig.add_trace(go.Scatter(
             x=dates, y=lower, mode="lines",
             line=dict(color="rgba(255,152,0,0.5)", width=1, dash="dash"),
             fill="tonexty", fillcolor="rgba(255,152,0,0.08)",
             showlegend=False, hovertemplate="BOLL-DN: %{y:.2f}<extra></extra>",
-        ), row=1, col=1)
+        ), row=row_kline, col=1)
         fig.add_trace(go.Scatter(
             x=dates, y=mid, mode="lines",
             line=dict(color="#FF9800", width=1),
             showlegend=False, hovertemplate="BOLL-MID: %{y:.2f}<extra></extra>",
-        ), row=1, col=1)
+        ), row=row_kline, col=1)
 
     # 4. TD Sequential — 仅标注 9 和 13
     if show_td:
@@ -355,14 +400,14 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                 text=buy_text, textposition="bottom center",
                 textfont=dict(size=13, color="#4CAF50", family="Arial Black"),
                 showlegend=False, hovertemplate="Buy TD %{text}<extra></extra>",
-            ), row=1, col=1)
+            ), row=row_kline, col=1)
         if sell_x:
             fig.add_trace(go.Scatter(
                 x=sell_x, y=sell_y, mode="text",
                 text=sell_text, textposition="top center",
                 textfont=dict(size=13, color="#F44336", family="Arial Black"),
                 showlegend=False, hovertemplate="Sell TD %{text}<extra></extra>",
-            ), row=1, col=1)
+            ), row=row_kline, col=1)
 
     # 5. 成交量
     if show_volume:
@@ -371,7 +416,61 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
         fig.add_trace(go.Bar(
             x=dates, y=df["Volume"], marker_color=colors_vol,
             showlegend=False, hovertemplate="Vol: %{y:,.0f}<extra></extra>",
-        ), row=2, col=1)
+        ), row=row_vol, col=1)
+
+    # 6. RS-Ratio & RS-Momentum 子图
+    if show_rrg and benchmark_df is not None:
+        rs_ratio_vals, rs_mom_vals = calc_rrg_series(df, benchmark_df)
+
+        # RS-Ratio
+        fig.add_trace(go.Scatter(
+            x=dates, y=rs_ratio_vals, mode="lines",
+            line=dict(color="#2196F3", width=1.5),
+            showlegend=False, hovertemplate="RS-Ratio: %{y:.2f}<extra></extra>",
+        ), row=row_rs_ratio, col=1)
+        # RS-Ratio 100基准线
+        fig.add_hline(y=100, line_dash="dash", line_color="#555", line_width=1,
+                       row=row_rs_ratio, col=1)
+        # RS-Ratio > 100 区域着色
+        fig.add_trace(go.Scatter(
+            x=dates, y=np.where(rs_ratio_vals >= 100, rs_ratio_vals, 100),
+            mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ), row=row_rs_ratio, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=np.full(len(dates), 100.0),
+            mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip",
+            fill="tonexty", fillcolor="rgba(76,175,80,0.12)",
+        ), row=row_rs_ratio, col=1)
+        fig.update_yaxes(
+            title_text="RS-Ratio", title_font=dict(size=10, color="#2196F3"),
+            showgrid=True, gridcolor="#2B2B43",
+            row=row_rs_ratio, col=1,
+        )
+
+        # RS-Momentum
+        fig.add_trace(go.Scatter(
+            x=dates, y=rs_mom_vals, mode="lines",
+            line=dict(color="#FF9800", width=1.5),
+            showlegend=False, hovertemplate="RS-Mom: %{y:.2f}<extra></extra>",
+        ), row=row_rs_mom, col=1)
+        # RS-Momentum 100基准线
+        fig.add_hline(y=100, line_dash="dash", line_color="#555", line_width=1,
+                       row=row_rs_mom, col=1)
+        # RS-Momentum > 100 区域着色
+        fig.add_trace(go.Scatter(
+            x=dates, y=np.where(rs_mom_vals >= 100, rs_mom_vals, 100),
+            mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ), row=row_rs_mom, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=np.full(len(dates), 100.0),
+            mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip",
+            fill="tonexty", fillcolor="rgba(76,175,80,0.12)",
+        ), row=row_rs_mom, col=1)
+        fig.update_yaxes(
+            title_text="RS-Mom", title_font=dict(size=10, color="#FF9800"),
+            showgrid=True, gridcolor="#2B2B43",
+            row=row_rs_mom, col=1,
+        )
 
     # 布局
     latest_price = float(df.iloc[-1]["Close"])
@@ -383,7 +482,7 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
     fig.update_layout(
         title=dict(text=title_text, font=dict(size=14, color="#d1d4dc"),
                    x=0.01, xanchor="left"),
-        height=460,
+        height=550 if show_rrg else 460,
         plot_bgcolor="#131722",
         paper_bgcolor="#131722",
         font_color="#d1d4dc",
@@ -393,7 +492,7 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
         yaxis=dict(showgrid=True, gridcolor="#2B2B43", side="right"),
     )
     if show_volume:
-        fig.update_yaxes(showgrid=True, gridcolor="#2B2B43", row=2, col=1)
+        fig.update_yaxes(showgrid=True, gridcolor="#2B2B43", row=row_vol, col=1)
 
     # 隐藏非交易日的空隙
     fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
@@ -670,6 +769,7 @@ st.sidebar.header("📈 技术指标")
 show_ma = st.sidebar.checkbox("均线 (MA5/10/20)", value=True)
 show_boll = st.sidebar.checkbox("布林带 (BOLL20)", value=False)
 show_td = st.sidebar.checkbox("TD Sequential (Setup9/CD13)", value=False)
+show_rrg = st.sidebar.checkbox("RS-Ratio / RS-Momentum", value=False)
 show_volume = st.sidebar.checkbox("成交量", value=True)
 
 view_mode = st.sidebar.radio("展示模式", ["个股K线", "行业对比走势"], index=0)
@@ -680,6 +780,12 @@ if not selected_stocks:
     st.stop()
 
 selected_symbols = {name: sector_info["stocks"][name] for name in selected_stocks}
+
+# 获取恒指基准（RS指标需要）
+hsi_df = fetch_stock_data("^HSI", period) if show_rrg else None
+if show_rrg and hsi_df is None:
+    st.sidebar.warning("恒指基准数据获取失败，RS指标无法显示")
+    show_rrg = False
 
 with st.spinner(f"正在获取 {len(selected_stocks)} 只股票数据..."):
     data_dict = fetch_multiple_stocks(selected_symbols, period)
@@ -720,7 +826,7 @@ if view_mode == "个股K线":
             symbol = selected_symbols[name]
 
             with cols[col_idx]:
-                fig = build_kline_chart(df, name, symbol, show_ma, show_boll, show_volume, show_td)
+                fig = build_kline_chart(df, name, symbol, show_ma, show_boll, show_volume, show_td, show_rrg, hsi_df)
                 st.plotly_chart(fig, use_container_width=True, config=dict(
                     displayModeBar=False, scrollZoom=True,
                 ))

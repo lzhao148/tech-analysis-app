@@ -1,13 +1,14 @@
 # hk_sector_leaders_page.py — 港股行业龙头K线可视化
 # 自包含页面：展示港股不同行业板块龙头股票的K线图
-# 依赖：streamlit, pandas, numpy, yfinance, streamlit-lightweight-charts
+# 依赖：streamlit, pandas, numpy, yfinance, plotly
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-from streamlit_lightweight_charts import renderLightweightCharts
 
 # ============================================================
 #  港股行业龙头股票定义
@@ -184,26 +185,24 @@ def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
     low = df["Low"].values
     n = len(df)
 
-    td_setup = [0] * n       # 正数=买入setup, 负数=卖出setup
-    td_countdown = [0] * n    # 正数=买入countdown, 负数=卖出countdown
-    td_signal = [""] * n       # "BS1"~"BS9" / "BC1"~"BC13" / "SS1"~"SS9" / "SC1"~"SC13"
+    td_setup = [0] * n
+    td_countdown = [0] * n
+    td_signal = [""] * n
 
-    setup_state = 0       # 当前setup计数 (>0=买入, <0=卖出)
-    countdown_buy = 0     # 买入countdown计数
-    countdown_sell = 0    # 卖出countdown计数
+    setup_state = 0
+    countdown_buy = 0
+    countdown_sell = 0
     buy_setup_done = False
     sell_setup_done = False
 
     for i in range(4, n):
         # --- Setup 逻辑 ---
         if close[i] < close[i - 4]:
-            # 买入setup候选
             if setup_state > 0:
                 setup_state += 1
             else:
                 setup_state = 1
         elif close[i] > close[i - 4]:
-            # 卖出setup候选
             if setup_state < 0:
                 setup_state -= 1
             else:
@@ -215,14 +214,12 @@ def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
 
         # Setup 完成信号
         if setup_state == 9:
-            # 买入 Setup 9 完成
             buy_setup_done = True
             sell_setup_done = False
             countdown_buy = 0
             countdown_sell = 0
             td_signal[i] = "BS9"
         elif setup_state == -9:
-            # 卖出 Setup 9 完成
             sell_setup_done = True
             buy_setup_done = False
             countdown_buy = 0
@@ -235,7 +232,6 @@ def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
                 td_signal[i] = f"SS{abs(setup_state)}"
 
         # --- Countdown 逻辑 ---
-        # 买入 Countdown: Setup完成后，收盘 ≤ 2根前最低价
         if buy_setup_done and i >= 2:
             if close[i] <= low[i - 2]:
                 countdown_buy += 1
@@ -246,7 +242,6 @@ def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
                 else:
                     td_signal[i] = f"BC{countdown_buy}"
 
-        # 卖出 Countdown: Setup完成后，收盘 ≥ 2根前最高价
         if sell_setup_done and i >= 2:
             if close[i] >= high[i - 2]:
                 countdown_sell += 1
@@ -265,200 +260,154 @@ def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ============================================================
-#  图表构建
+#  Plotly 图表构建
 # ============================================================
 
 def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                       show_ma: bool = True, show_boll: bool = False,
-                      show_volume: bool = True, show_td: bool = False) -> list:
+                      show_volume: bool = True, show_td: bool = False) -> go.Figure:
     """
-    构建单只股票的K线图表
-    返回 Lightweight Charts 的 charts 列表
+    构建单只股票的K线图表（Plotly）
+    返回 plotly Figure 对象
     """
-    charts = []
-    main_series = []
+    # 带成交量子图
+    rows = 2 if show_volume else 1
+    row_heights = [0.75, 0.25] if show_volume else [1.0]
+    fig = make_subplots(
+        rows=rows, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=row_heights,
+    )
 
-    # 1. K线数据
-    candle_data = []
-    for _, row in df.iterrows():
-        candle_data.append({
-            "time": str(row["Date"])[:10],
-            "open": round(float(row["Open"]), 3),
-            "high": round(float(row["High"]), 3),
-            "low": round(float(row["Low"]), 3),
-            "close": round(float(row["Close"]), 3),
-        })
-    main_series.append({
-        "type": "Candlestick",
-        "data": candle_data,
-        "options": {
-            "upColor": "#26a69a", "downColor": "#ef5350",
-            "borderUpColor": "#26a69a", "borderDownColor": "#ef5350",
-            "wickUpColor": "#26a69a", "wickDownColor": "#ef5350",
-        },
-    })
+    dates = df["Date"]
+    close = df["Close"]
+
+    # 1. K线
+    fig.add_trace(go.Candlestick(
+        x=dates, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
+        showlegend=False,
+    ), row=1, col=1)
 
     # 2. 均线
-    close = df["Close"]
     if show_ma:
-        for window, color, label in [(5, "#FF6D00", "MA5"), (10, "#2196F3", "MA10"), (20, "#9C27B0", "MA20")]:
+        for window, color in [(5, "#FF6D00"), (10, "#2196F3"), (20, "#9C27B0")]:
             ma = calc_ma(close, window)
-            ma_data = []
-            for i, v in ma.items():
-                if pd.notna(v):
-                    ma_data.append({"time": str(df.iloc[i]["Date"])[:10], "value": round(float(v), 3)})
-            if ma_data:
-                main_series.append({
-                    "type": "Line",
-                    "data": ma_data,
-                    "options": {
-                        "color": color, "lineWidth": 1,
-                        "crosshairMarkerVisible": False,
-                        "lastValueVisible": False,
-                        "priceLineVisible": False,
-                    },
-                })
+            fig.add_trace(go.Scatter(
+                x=dates, y=ma, mode="lines",
+                line=dict(color=color, width=1),
+                showlegend=False, hovertemplate=f"MA{window}: %{{y:.2f}}<extra></extra>",
+            ), row=1, col=1)
 
     # 3. 布林带
     if show_boll:
         mid, upper, lower = calc_bollinger(close)
-        for series_data, color, label in [
-            (mid, "#FF9800", "BOLL-MID"),
-            (upper, "rgba(255,152,0,0.5)", "BOLL-UP"),
-            (lower, "rgba(255,152,0,0.5)", "BOLL-DN"),
-        ]:
-            boll_data = []
-            for i, v in series_data.items():
-                if pd.notna(v):
-                    boll_data.append({"time": str(df.iloc[i]["Date"])[:10], "value": round(float(v), 3)})
-            if boll_data:
-                main_series.append({
-                    "type": "Line",
-                    "data": boll_data,
-                    "options": {
-                        "color": color, "lineWidth": 1,
-                        "lineStyle": 2 if "UP" in label or "DN" in label else 0,
-                        "crosshairMarkerVisible": False,
-                        "lastValueVisible": False,
-                        "priceLineVisible": False,
-                    },
-                })
+        fig.add_trace(go.Scatter(
+            x=dates, y=upper, mode="lines",
+            line=dict(color="rgba(255,152,0,0.5)", width=1, dash="dash"),
+            showlegend=False, hovertemplate="BOLL-UP: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=lower, mode="lines",
+            line=dict(color="rgba(255,152,0,0.5)", width=1, dash="dash"),
+            fill="tonexty", fillcolor="rgba(255,152,0,0.08)",
+            showlegend=False, hovertemplate="BOLL-DN: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=mid, mode="lines",
+            line=dict(color="#FF9800", width=1),
+            showlegend=False, hovertemplate="BOLL-MID: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
 
-    # 4. TD Sequential 信号 — 仅标记 9 (Setup完成) 与 13 (Countdown完成)
-    #    用短竖线贴在K线高低点外，title 在图例区显示数字
+    # 4. TD Sequential — 仅标注 9 和 13
     if show_td:
         df_td = calc_td_sequential(df)
+        buy_x, buy_y, buy_text = [], [], []
+        sell_x, sell_y, sell_text = [], [], []
         for i in range(len(df_td)):
             sig = df_td.iloc[i]["td_signal"]
             if not sig:
                 continue
             is_setup9 = sig in ("BS9", "SS9")
-            is_countdown13 = sig in ("BC13", "SC13")
-            if not is_setup9 and not is_countdown13:
+            is_cd13 = sig in ("BC13", "SC13")
+            if not is_setup9 and not is_cd13:
                 continue
 
-            date_str = str(df_td.iloc[i]["Date"])[:10]
+            d = df_td.iloc[i]["Date"]
             label = "9" if is_setup9 else "13"
 
             if sig.startswith("B"):
-                # 买入 — 绿色短竖线，从K线低点向下延伸
-                color = "#4CAF50"
-                low_val = float(df_td.iloc[i]["Low"])
-                tick_len = low_val * 0.012  # 竖线长度 ≈ 价格的1.2%
-                main_series.append({
-                    "type": "Line",
-                    "data": [
-                        {"time": date_str, "value": round(low_val, 3)},
-                        {"time": date_str, "value": round(low_val - tick_len, 3)},
-                    ],
-                    "options": {
-                        "color": color, "lineWidth": 2,
-                        "crosshairMarkerVisible": False,
-                        "lastValueVisible": False,
-                        "priceLineVisible": False,
-                        "title": label,
-                    },
-                })
+                # 买入 — 标在K线下方
+                buy_x.append(d)
+                buy_y.append(float(df_td.iloc[i]["Low"]))
+                buy_text.append(label)
             else:
-                # 卖出 — 红色短竖线，从K线高点向上延伸
-                color = "#F44336"
-                high_val = float(df_td.iloc[i]["High"])
-                tick_len = high_val * 0.012
-                main_series.append({
-                    "type": "Line",
-                    "data": [
-                        {"time": date_str, "value": round(high_val, 3)},
-                        {"time": date_str, "value": round(high_val + tick_len, 3)},
-                    ],
-                    "options": {
-                        "color": color, "lineWidth": 2,
-                        "crosshairMarkerVisible": False,
-                        "lastValueVisible": False,
-                        "priceLineVisible": False,
-                        "title": label,
-                    },
-                })
+                # 卖出 — 标在K线上方
+                sell_x.append(d)
+                sell_y.append(float(df_td.iloc[i]["High"]))
+                sell_text.append(label)
 
-    # 主图配置
+        if buy_x:
+            fig.add_trace(go.Scatter(
+                x=buy_x, y=buy_y, mode="text",
+                text=buy_text, textposition="bottom center",
+                textfont=dict(size=13, color="#4CAF50", family="Arial Black"),
+                showlegend=False, hovertemplate="Buy TD %{text}<extra></extra>",
+            ), row=1, col=1)
+        if sell_x:
+            fig.add_trace(go.Scatter(
+                x=sell_x, y=sell_y, mode="text",
+                text=sell_text, textposition="top center",
+                textfont=dict(size=13, color="#F44336", family="Arial Black"),
+                showlegend=False, hovertemplate="Sell TD %{text}<extra></extra>",
+            ), row=1, col=1)
+
+    # 5. 成交量
+    if show_volume:
+        colors_vol = ["#26a69a" if c >= o else "#ef5350"
+                      for c, o in zip(df["Close"], df["Open"])]
+        fig.add_trace(go.Bar(
+            x=dates, y=df["Volume"], marker_color=colors_vol,
+            showlegend=False, hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+        ), row=2, col=1)
+
+    # 布局
     latest_price = float(df.iloc[-1]["Close"])
     prev_price = float(df.iloc[-2]["Close"]) if len(df) > 1 else latest_price
-    change_pct = (latest_price - prev_price) / prev_price * 100
-    sign = "📈" if change_pct >= 0 else "📉"
+    chg = (latest_price - prev_price) / prev_price * 100
+    sign = "▲" if chg >= 0 else "▼"
+    title_text = f"{stock_name} {symbol} — {latest_price:.2f} {sign} {chg:+.2f}%"
 
-    chart_options = {
-        "height": 380,
-        "layout": {
-            "background": {"type": "solid", "color": "#131722"},
-            "textColor": "#d1d4dc",
-        },
-        "grid": {
-            "vertLines": {"color": "#2B2B43"},
-            "horzLines": {"color": "#2B2B43"},
-        },
-        "crosshair": {"mode": 0},
-        "timeScale": {"timeVisible": False},
-    }
-    charts.append({"chart": chart_options, "series": main_series})
-
-    # 4. 成交量
+    fig.update_layout(
+        title=dict(text=title_text, font=dict(size=14, color="#d1d4dc"),
+                   x=0.01, xanchor="left"),
+        height=460,
+        plot_bgcolor="#131722",
+        paper_bgcolor="#131722",
+        font_color="#d1d4dc",
+        margin=dict(l=50, r=20, t=40, b=20),
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(type="category", nticks=15, showgrid=True, gridcolor="#2B2B43"),
+        yaxis=dict(showgrid=True, gridcolor="#2B2B43", side="right"),
+    )
     if show_volume:
-        volume_data = []
-        for _, row in df.iterrows():
-            volume_data.append({
-                "time": str(row["Date"])[:10],
-                "value": float(row["Volume"]),
-                "color": "#26a69a" if row["Close"] >= row["Open"] else "#ef5350",
-            })
-        vol_chart = {
-            "height": 80,
-            "layout": {
-                "background": {"type": "solid", "color": "#131722"},
-                "textColor": "#d1d4dc",
-            },
-            "grid": {
-                "vertLines": {"color": "#2B2B43"},
-                "horzLines": {"color": "#2B2B43"},
-            },
-        }
-        charts.append({
-            "chart": vol_chart,
-            "series": [{
-                "type": "Histogram",
-                "data": volume_data,
-                "options": {"priceFormat": {"type": "volume"}},
-            }],
-        })
+        fig.update_yaxes(showgrid=True, gridcolor="#2B2B43", row=2, col=1)
 
-    return charts
+    # 隐藏非交易日的空隙
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+
+    return fig
 
 
-def build_comparison_chart(data_dict: dict, period: str = "1y") -> list:
+def build_comparison_chart(data_dict: dict) -> go.Figure:
     """
     构建行业对比归一化走势图（以首日为基准100）
     """
-    charts = []
-    line_series = []
-    colors = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0", "#00BCD4", "#FFEB3B", "#E91E63"]
+    fig = go.Figure()
+    colors = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0",
+              "#00BCD4", "#FFEB3B", "#E91E63"]
 
     for idx, (name, df) in enumerate(data_dict.items()):
         if df is None or len(df) < 2:
@@ -466,41 +415,24 @@ def build_comparison_chart(data_dict: dict, period: str = "1y") -> list:
         close = df["Close"].values
         base = close[0] if close[0] != 0 else 1
         normalized = (close / base) * 100
-        line_data = []
-        for i, v in enumerate(normalized):
-            line_data.append({"time": str(df.iloc[i]["Date"])[:10], "value": round(float(v), 2)})
+        fig.add_trace(go.Scatter(
+            x=df["Date"], y=normalized, mode="lines",
+            name=name, line=dict(color=colors[idx % len(colors)], width=2),
+            hovertemplate=f"{name}: %{{y:.2f}}<extra></extra>",
+        ))
 
-        color = colors[idx % len(colors)]
-        line_series.append({
-            "type": "Line",
-            "data": line_data,
-            "options": {
-                "color": color, "lineWidth": 2,
-                "crosshairMarkerVisible": True,
-                "lastValueVisible": True,
-                "priceLineVisible": False,
-                "title": name,
-            },
-        })
-
-    if not line_series:
-        return []
-
-    chart_options = {
-        "height": 450,
-        "layout": {
-            "background": {"type": "solid", "color": "#131722"},
-            "textColor": "#d1d4dc",
-        },
-        "grid": {
-            "vertLines": {"color": "#2B2B43"},
-            "horzLines": {"color": "#2B2B43"},
-        },
-        "crosshair": {"mode": 0},
-        "timeScale": {"timeVisible": False},
-    }
-    charts.append({"chart": chart_options, "series": line_series})
-    return charts
+    fig.update_layout(
+        height=450,
+        plot_bgcolor="#131722",
+        paper_bgcolor="#131722",
+        font_color="#d1d4dc",
+        margin=dict(l=50, r=20, t=30, b=30),
+        xaxis=dict(showgrid=True, gridcolor="#2B2B43"),
+        yaxis=dict(showgrid=True, gridcolor="#2B2B43", side="right",
+                   title="归一化指数"),
+        legend=dict(font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
 
 # ============================================================
 #  行业涨跌统计
@@ -519,7 +451,6 @@ def calc_sector_stats(data_dict: dict) -> pd.DataFrame:
         change_pct = (latest - first) / first * 100
         avg_vol = float(df["Volume"].mean())
 
-        # 近5日涨跌
         if len(df) >= 5:
             week_ago = float(df.iloc[-5]["Close"])
             week_chg = (latest - week_ago) / week_ago * 100
@@ -583,7 +514,6 @@ if not selected_stocks:
     st.warning("👈 请在左侧选择至少一只股票")
     st.stop()
 
-# 构建选中的股票代码映射
 selected_symbols = {name: sector_info["stocks"][name] for name in selected_stocks}
 
 with st.spinner(f"正在获取 {len(selected_stocks)} 只股票数据..."):
@@ -601,7 +531,6 @@ if failed:
 st.subheader(f"{selected_sector} — 龙头股涨跌概览")
 stats_df = calc_sector_stats(data_dict)
 
-# 添加涨跌颜色标注
 def color_change(val):
     if isinstance(val, (int, float)):
         color = "#4CAF50" if val >= 0 else "#F44336"
@@ -613,7 +542,6 @@ st.dataframe(styled, use_container_width=True, hide_index=True, height=min(len(s
 
 # ---- 图表展示 ----
 if view_mode == "个股K线":
-    # 个股K线模式：每只股票一个图表区域
     cols_per_row = 2
     stock_list = list(data_dict.items())
 
@@ -627,42 +555,38 @@ if view_mode == "个股K线":
             symbol = selected_symbols[name]
 
             with cols[col_idx]:
-                # 股票标题与涨跌
-                latest = float(df.iloc[-1]["Close"])
-                if len(df) >= 2:
-                    prev = float(df.iloc[-2]["Close"])
-                    chg = (latest - prev) / prev * 100
-                    arrow = "🔺" if chg >= 0 else "🔻"
-                    st.markdown(f"**{name}** `{symbol}` — {latest:.2f} {arrow} {chg:+.2f}%")
-                else:
-                    st.markdown(f"**{name}** `{symbol}` — {latest:.2f}")
-
-                charts = build_kline_chart(df, name, symbol, show_ma, show_boll, show_volume, show_td)
-                renderLightweightCharts(charts)
+                fig = build_kline_chart(df, name, symbol, show_ma, show_boll, show_volume, show_td)
+                st.plotly_chart(fig, use_container_width=True, config=dict(
+                    displayModeBar=False, scrollZoom=True,
+                ))
 
 else:
     # 行业对比走势模式
     st.subheader(f"{selected_sector} — 龙头股归一化走势对比")
     st.caption("以区间首日收盘价为基准100，对比各股相对涨跌幅")
 
-    comp_charts = build_comparison_chart(data_dict, period)
-    if comp_charts:
-        renderLightweightCharts(comp_charts)
-    else:
-        st.warning("数据不足，无法生成对比图")
+    comp_fig = build_comparison_chart(data_dict)
+    st.plotly_chart(comp_fig, use_container_width=True, config=dict(
+        displayModeBar=False, scrollZoom=True,
+    ))
 
-    # 额外展示：涨跌幅排名柱状图
+    # 涨跌幅排名柱状图
     st.subheader("涨跌幅排名")
     if not stats_df.empty:
         rank_df = stats_df.sort_values("区间涨跌%", ascending=True)
-        bar_data = []
-        for _, row in rank_df.iterrows():
-            bar_data.append({
-                "股票": row["股票"],
-                "涨跌幅": row["区间涨跌%"],
-            })
-        rank_bar_df = pd.DataFrame(bar_data)
-        st.bar_chart(rank_bar_df.set_index("股票"), height=300)
+        bar_colors = ["#4CAF50" if v >= 0 else "#F44336" for v in rank_df["区间涨跌%"]]
+        bar_fig = go.Figure(go.Bar(
+            x=rank_df["区间涨跌%"], y=rank_df["股票"],
+            orientation="h", marker_color=bar_colors,
+            hovertemplate="%{y}: %{x:.2f}%<extra></extra>",
+        ))
+        bar_fig.update_layout(
+            height=300, plot_bgcolor="#131722", paper_bgcolor="#131722",
+            font_color="#d1d4dc", margin=dict(l=80, r=20, t=10, b=30),
+            xaxis=dict(showgrid=True, gridcolor="#2B2B43", title="涨跌幅%"),
+            yaxis=dict(showgrid=False),
+        )
+        st.plotly_chart(bar_fig, use_container_width=True, config=dict(displayModeBar=False))
 
 # ---- 全行业概览 ----
 st.markdown("---")
@@ -674,7 +598,6 @@ with st.expander("📊 查看全部行业龙头最新行情", expanded=False):
     total_sectors = len(HK_SECTORS)
 
     for si, (s_name, s_info) in enumerate(HK_SECTORS.items()):
-        # 只取每个行业的前2只龙头
         top_stocks = dict(list(s_info["stocks"].items())[:2])
         s_data = fetch_multiple_stocks(top_stocks, "1mo")
 

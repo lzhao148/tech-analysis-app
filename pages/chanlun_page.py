@@ -685,19 +685,37 @@ def build_chanlun_charts(df: pd.DataFrame, chan_klines, bi_list,
             "close": float(row["Close"]),
         })
 
-    # 2. 买卖点 markers
-    markers = []
-    for bsp in bs_points:
-        is_buy = "买" in bsp.type.value
-        markers.append({
-            "time": bsp.date,
-            "position": "belowBar" if is_buy else "aboveBar",
-            "color": "#4CAF50" if is_buy else "#F44336",
-            "shape": "arrowUp" if is_buy else "arrowDown",
-            "text": bsp.type.value,
-            "size": 2,
-        })
-    markers.sort(key=lambda x: x["time"])
+    # 2. 买卖点 — 用 Line series 标注（markers 不被 streamlit-lightweight-charts 支持）
+    # 买卖点用小线段标记：从前一交易日到买卖点位置画一根短斜线
+    if show_options.get("买卖点", True) and bs_points:
+        for bsp in bs_points:
+            is_buy = "买" in bsp.type.value
+            color = "#4CAF50" if is_buy else "#F44336"
+            # 找前一个交易日
+            bsp_idx = None
+            for i, row in df.iterrows():
+                if str(row["Date"])[:10] == bsp.date:
+                    bsp_idx = i
+                    break
+            if bsp_idx is not None and bsp_idx > 0:
+                prev_date = str(df.iloc[bsp_idx - 1]["Date"])[:10]
+                prev_close = float(df.iloc[bsp_idx - 1]["Close"])
+                offset = bsp.value * (0.005 if is_buy else -0.005)
+                main_series.append({
+                    "type": "Line",
+                    "data": [
+                        {"time": prev_date, "value": prev_close},
+                        {"time": bsp.date, "value": bsp.value + offset},
+                    ],
+                    "options": {
+                        "color": color,
+                        "lineWidth": 2,
+                        "crosshairMarkerVisible": False,
+                        "lastValueVisible": True,
+                        "priceLineVisible": False,
+                        "title": bsp.type.value,
+                    },
+                })
 
     candle_options = {
         "upColor": "#26a69a", "downColor": "#ef5350",
@@ -709,7 +727,6 @@ def build_chanlun_charts(df: pd.DataFrame, chan_klines, bi_list,
         "type": "Candlestick",
         "data": candle_data,
         "options": candle_options,
-        "markers": markers if show_options.get("买卖点", True) else [],
     })
 
     # 3. 笔 (Line series)
@@ -774,6 +791,24 @@ def build_chanlun_charts(df: pd.DataFrame, chan_klines, bi_list,
                         "crosshairMarkerVisible": False,
                         "lastValueVisible": False,
                         "priceLineVisible": False,
+                        "baseValue": {"type": "price", "price": zs.zd},
+                    },
+                })
+            # 中枢上下沿标注线
+            for val, lbl in [(zs.zg, "ZG"), (zs.zd, "ZD")]:
+                line_data = [{"time": area_data[0]["time"], "value": val},
+                             {"time": area_data[-1]["time"], "value": val}]
+                main_series.append({
+                    "type": "Line",
+                    "data": line_data,
+                    "options": {
+                        "color": "rgba(255, 152, 0, 0.8)",
+                        "lineWidth": 1,
+                        "lineStyle": 2,
+                        "crosshairMarkerVisible": False,
+                        "lastValueVisible": True,
+                        "priceLineVisible": False,
+                        "title": f"{lbl}:{val:.2f}",
                     },
                 })
 

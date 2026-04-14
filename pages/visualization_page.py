@@ -326,7 +326,9 @@ if run_button:
             start_dt = end_dt - timedelta(days={"1mo": 35, "3mo": 100, "6mo": 200, "1y": 380, "2y": 760, "5y": 1900}[period])
             df = get_a_stock_data(symbol, str(start_dt.date()), str(end_dt.date()))
         else:
-            df = get_hk_us_stock_data(symbol, period)
+            end_dt = datetime.today()
+            start_dt = end_dt - timedelta(days={"1mo": 35, "3mo": 100, "6mo": 200, "1y": 380, "2y": 760, "5y": 1900}[period])
+            df = get_hk_us_stock_data(symbol, str(start_dt.date()), str(end_dt.date()))
 
     if df is None or len(df) < 10:
         st.error("数据获取失败或数据量不足，请检查股票代码。")

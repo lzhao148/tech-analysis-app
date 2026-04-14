@@ -345,48 +345,59 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                 })
 
     # 4. TD Sequential 信号 — 仅标记 9 (Setup完成) 与 13 (Countdown完成)
+    #    用短竖线贴在K线高低点外，title 在图例区显示数字
     if show_td:
         df_td = calc_td_sequential(df)
         for i in range(len(df_td)):
             sig = df_td.iloc[i]["td_signal"]
             if not sig:
                 continue
-            # 只标记 Setup 9 和 Countdown 13
             is_setup9 = sig in ("BS9", "SS9")
             is_countdown13 = sig in ("BC13", "SC13")
             if not is_setup9 and not is_countdown13:
                 continue
 
             date_str = str(df_td.iloc[i]["Date"])[:10]
-            close_val = float(df_td.iloc[i]["Close"])
+            label = "9" if is_setup9 else "13"
 
             if sig.startswith("B"):
-                # 买入信号 — 绿色，标在K线下方
+                # 买入 — 绿色短竖线，从K线低点向下延伸
                 color = "#4CAF50"
-                label = "9" if is_setup9 else "13"
-                anchor = float(df_td.iloc[i]["Low"])
-                y_pos = anchor * 0.985
+                low_val = float(df_td.iloc[i]["Low"])
+                tick_len = low_val * 0.012  # 竖线长度 ≈ 价格的1.2%
+                main_series.append({
+                    "type": "Line",
+                    "data": [
+                        {"time": date_str, "value": round(low_val, 3)},
+                        {"time": date_str, "value": round(low_val - tick_len, 3)},
+                    ],
+                    "options": {
+                        "color": color, "lineWidth": 2,
+                        "crosshairMarkerVisible": False,
+                        "lastValueVisible": False,
+                        "priceLineVisible": False,
+                        "title": label,
+                    },
+                })
             else:
-                # 卖出信号 — 红色，标在K线上方
+                # 卖出 — 红色短竖线，从K线高点向上延伸
                 color = "#F44336"
-                label = "9" if is_setup9 else "13"
-                anchor = float(df_td.iloc[i]["High"])
-                y_pos = anchor * 1.015
-
-            # 用 Line series 画一条极短横线 + title 显示数字
-            main_series.append({
-                "type": "Line",
-                "data": [
-                    {"time": date_str, "value": round(y_pos, 3)},
-                ],
-                "options": {
-                    "color": color, "lineWidth": 0,
-                    "crosshairMarkerVisible": False,
-                    "lastValueVisible": True,
-                    "priceLineVisible": False,
-                    "title": label,
-                },
-            })
+                high_val = float(df_td.iloc[i]["High"])
+                tick_len = high_val * 0.012
+                main_series.append({
+                    "type": "Line",
+                    "data": [
+                        {"time": date_str, "value": round(high_val, 3)},
+                        {"time": date_str, "value": round(high_val + tick_len, 3)},
+                    ],
+                    "options": {
+                        "color": color, "lineWidth": 2,
+                        "crosshairMarkerVisible": False,
+                        "lastValueVisible": False,
+                        "priceLineVisible": False,
+                        "title": label,
+                    },
+                })
 
     # 主图配置
     latest_price = float(df.iloc[-1]["Close"])

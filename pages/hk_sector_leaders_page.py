@@ -440,9 +440,10 @@ def build_comparison_chart(data_dict: dict) -> go.Figure:
 
 def calc_rrg(data_dict: dict, benchmark_df: pd.DataFrame) -> pd.DataFrame:
     """
-    计算RRG图表数据：
-    X轴 = JdK RS-Ratio (相对基准的强度比率的平滑值)
-    Y轴 = JdK RS-Momentum (RS-Ratio的变化动量)
+    计算RRG图表数据（标准JdK方法）：
+    X轴 = JdK RS-Ratio  = SMA(RS / SMA(RS,N), N)
+    Y轴 = JdK RS-Momentum = SMA(RS-Ratio / SMA(RS-Ratio,N), N)
+    Momentum与Ratio计算逻辑完全对称，Momentum>1即Ratio在加速上升
     以恒指为基准，计算各股的相对强度
     返回含 sector / stock / rs_ratio / rs_momentum 的 DataFrame
     """
@@ -469,8 +470,10 @@ def calc_rrg(data_dict: dict, benchmark_df: pd.DataFrame) -> pd.DataFrame:
             rs_ratio_raw = rs_raw / rs_sma
             rs_ratio = pd.Series(rs_ratio_raw).rolling(window=window).mean().values
 
-            # 4. JdK RS-Momentum = RS-Ratio 的10日变化率 再做10日SMA
-            rs_mom_raw = pd.Series(rs_ratio).pct_change(periods=window).values
+            # 4. JdK RS-Momentum = RS-Ratio / SMA(RS-Ratio, N) 再做SMA平滑
+            #    与 RS-Ratio 计算逻辑对称：RS-Ratio 是 RS/RS_SMA，Momentum 是 Ratio/Ratio_SMA
+            rs_ratio_sma = pd.Series(rs_ratio).rolling(window=window).mean().values
+            rs_mom_raw = rs_ratio / rs_ratio_sma
             rs_momentum = pd.Series(rs_mom_raw).rolling(window=window).mean().values
 
             # 取最后一个有效值

@@ -166,13 +166,111 @@ def calc_bollinger(close: pd.Series, window: int = 20, num_std: float = 2.0):
     lower = ma - num_std * std
     return ma, upper, lower
 
+
+# ============================================================
+#  TD Sequential (DeMark Setup 9 & Countdown 13)
+# ============================================================
+
+def calc_td_sequential(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    计算 TD Sequential 指标：
+    - Setup 9: 连续9根K线收盘价高于/低于4根前收盘价
+    - Countdown 13: Setup 完成后，收盘价 ≥/≤ 2根前最高/最低价
+    返回 DataFrame 增加 td_setup / td_countdown / td_signal 列
+    """
+    df = df.copy()
+    close = df["Close"].values
+    high = df["High"].values
+    low = df["Low"].values
+    n = len(df)
+
+    td_setup = [0] * n       # 正数=买入setup, 负数=卖出setup
+    td_countdown = [0] * n    # 正数=买入countdown, 负数=卖出countdown
+    td_signal = [""] * n       # "BS1"~"BS9" / "BC1"~"BC13" / "SS1"~"SS9" / "SC1"~"SC13"
+
+    setup_state = 0       # 当前setup计数 (>0=买入, <0=卖出)
+    countdown_buy = 0     # 买入countdown计数
+    countdown_sell = 0    # 卖出countdown计数
+    buy_setup_done = False
+    sell_setup_done = False
+
+    for i in range(4, n):
+        # --- Setup 逻辑 ---
+        if close[i] < close[i - 4]:
+            # 买入setup候选
+            if setup_state > 0:
+                setup_state += 1
+            else:
+                setup_state = 1
+        elif close[i] > close[i - 4]:
+            # 卖出setup候选
+            if setup_state < 0:
+                setup_state -= 1
+            else:
+                setup_state = -1
+        else:
+            setup_state = 0
+
+        td_setup[i] = setup_state
+
+        # Setup 完成信号
+        if setup_state == 9:
+            # 买入 Setup 9 完成
+            buy_setup_done = True
+            sell_setup_done = False
+            countdown_buy = 0
+            countdown_sell = 0
+            td_signal[i] = "BS9"
+        elif setup_state == -9:
+            # 卖出 Setup 9 完成
+            sell_setup_done = True
+            buy_setup_done = False
+            countdown_buy = 0
+            countdown_sell = 0
+            td_signal[i] = "SS9"
+        elif abs(setup_state) < 9 and abs(setup_state) >= 1:
+            if setup_state > 0:
+                td_signal[i] = f"BS{setup_state}"
+            else:
+                td_signal[i] = f"SS{abs(setup_state)}"
+
+        # --- Countdown 逻辑 ---
+        # 买入 Countdown: Setup完成后，收盘 ≤ 2根前最低价
+        if buy_setup_done and i >= 2:
+            if close[i] <= low[i - 2]:
+                countdown_buy += 1
+                if countdown_buy == 13:
+                    td_signal[i] = "BC13"
+                    countdown_buy = 0
+                    buy_setup_done = False
+                else:
+                    td_signal[i] = f"BC{countdown_buy}"
+
+        # 卖出 Countdown: Setup完成后，收盘 ≥ 2根前最高价
+        if sell_setup_done and i >= 2:
+            if close[i] >= high[i - 2]:
+                countdown_sell += 1
+                if countdown_sell == 13:
+                    td_signal[i] = "SC13"
+                    countdown_sell = 0
+                    sell_setup_done = False
+                else:
+                    td_signal[i] = f"SC{countdown_sell}"
+
+        td_countdown[i] = countdown_buy if countdown_buy else -countdown_sell
+
+    df["td_setup"] = td_setup
+    df["td_countdown"] = td_countdown
+    df["td_signal"] = td_signal
+    return df
+
 # ============================================================
 #  图表构建
 # ============================================================
 
 def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                       show_ma: bool = True, show_boll: bool = False,
-                      show_volume: bool = True) -> list:
+                      show_volume: bool = True, show_td: bool = False) -> list:
     """
     构建单只股票的K线图表
     返回 Lightweight Charts 的 charts 列表
@@ -218,7 +316,6 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                         "crosshairMarkerVisible": False,
                         "lastValueVisible": False,
                         "priceLineVisible": False,
-                        "title": label,
                     },
                 })
 
@@ -244,9 +341,73 @@ def build_kline_chart(df: pd.DataFrame, stock_name: str, symbol: str,
                         "crosshairMarkerVisible": False,
                         "lastValueVisible": False,
                         "priceLineVisible": False,
-                        "title": label,
                     },
                 })
+
+    # 4. TD Sequential 信号
+    if show_td:
+        df_td = calc_td_sequential(df)
+        for i in range(len(df_td)):
+            sig = df_td.iloc[i]["td_signal"]
+            if not sig:
+                continue
+            date_str = str(df_td.iloc[i]["Date"])[:10]
+            close_val = float(df_td.iloc[i]["Close"])
+
+            # 判断信号类型与颜色
+            if sig.startswith("BS") or sig.startswith("BC"):
+                # 买入信号 — 绿色
+                color = "#4CAF50"
+                is_key = sig in ("BS9", "BC13")
+                offset = -close_val * (0.015 if is_key else 0.008)
+            elif sig.startswith("SS") or sig.startswith("SC"):
+                # 卖出信号 — 红色
+                color = "#F44336"
+                is_key = sig in ("SS9", "SC13")
+                offset = close_val * (0.015 if is_key else 0.008)
+            else:
+                continue
+
+            # 关键信号 (Setup9 / Countdown13) 用粗短斜线标注
+            if is_key:
+                # 从前一根K线的收盘到信号位置画短斜线
+                prev_close = float(df_td.iloc[i - 1]["Close"]) if i > 0 else close_val
+                prev_date = str(df_td.iloc[i - 1]["Date"])[:10] if i > 0 else date_str
+                main_series.append({
+                    "type": "Line",
+                    "data": [
+                        {"time": prev_date, "value": round(prev_close, 3)},
+                        {"time": date_str, "value": round(close_val + offset, 3)},
+                    ],
+                    "options": {
+                        "color": color, "lineWidth": 3,
+                        "crosshairMarkerVisible": False,
+                        "lastValueVisible": False,
+                        "priceLineVisible": False,
+                        "title": sig,
+                    },
+                })
+            # 非关键信号 (Setup 1-8, Countdown 1-12) 用极细线标注
+            else:
+                # 仅标 Setup 1-8 中的奇数 (1,3,5,7) 避免过于密集
+                num_part = ''.join(filter(str.isdigit, sig))
+                num = int(num_part) if num_part else 0
+                if num % 2 == 1:
+                    hl = float(df_td.iloc[i]["Low"]) if sig.startswith("BS") else float(df_td.iloc[i]["High"])
+                    dot_offset = -hl * 0.005 if sig.startswith("BS") else hl * 0.005
+                    main_series.append({
+                        "type": "Line",
+                        "data": [
+                            {"time": date_str, "value": round(hl + dot_offset, 3)},
+                            {"time": date_str, "value": round(hl + dot_offset * 2.5, 3)},
+                        ],
+                        "options": {
+                            "color": color, "lineWidth": 1,
+                            "crosshairMarkerVisible": False,
+                            "lastValueVisible": False,
+                            "priceLineVisible": False,
+                        },
+                    })
 
     # 主图配置
     latest_price = float(df.iloc[-1]["Close"])
@@ -422,6 +583,7 @@ period = period_map[period_label]
 st.sidebar.header("📈 技术指标")
 show_ma = st.sidebar.checkbox("均线 (MA5/10/20)", value=True)
 show_boll = st.sidebar.checkbox("布林带 (BOLL20)", value=False)
+show_td = st.sidebar.checkbox("TD Sequential (Setup9/CD13)", value=False)
 show_volume = st.sidebar.checkbox("成交量", value=True)
 
 view_mode = st.sidebar.radio("展示模式", ["个股K线", "行业对比走势"], index=0)
@@ -485,7 +647,7 @@ if view_mode == "个股K线":
                 else:
                     st.markdown(f"**{name}** `{symbol}` — {latest:.2f}")
 
-                charts = build_kline_chart(df, name, symbol, show_ma, show_boll, show_volume)
+                charts = build_kline_chart(df, name, symbol, show_ma, show_boll, show_volume, show_td)
                 renderLightweightCharts(charts)
 
 else:

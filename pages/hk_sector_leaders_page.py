@@ -435,8 +435,170 @@ def build_comparison_chart(data_dict: dict) -> go.Figure:
     return fig
 
 # ============================================================
-#  行业涨跌统计
+#  RRG (Relative Rotation Graph) 计算
 # ============================================================
+
+def calc_rrg(data_dict: dict, benchmark_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    计算RRG图表数据：
+    X轴 = JdK RS-Ratio (相对基准的强度比率的平滑值)
+    Y轴 = JdK RS-Momentum (RS-Ratio的变化动量)
+    以恒指为基准，计算各股的相对强度
+    返回含 sector / stock / rs_ratio / rs_momentum 的 DataFrame
+    """
+    bench_close = benchmark_df["Close"].values
+    results = []
+
+    for sector_tag, stocks_data in data_dict.items():
+        for stock_name, df in stocks_data.items():
+            if df is None or len(df) < 30:
+                continue
+            close = df["Close"].values
+            n = min(len(close), len(bench_close))
+
+            # 1. 原始相对强度 RS = close / benchmark_close
+            rs_raw = close[-n:] / bench_close[-n:]
+
+            # 2. RS 的 10日 SMA
+            window = 10
+            if len(rs_raw) < window:
+                continue
+            rs_sma = pd.Series(rs_raw).rolling(window=window).mean().values
+
+            # 3. JdK RS-Ratio = RS / RS的10日SMA 再做10日SMA
+            rs_ratio_raw = rs_raw / rs_sma
+            rs_ratio = pd.Series(rs_ratio_raw).rolling(window=window).mean().values
+
+            # 4. JdK RS-Momentum = RS-Ratio 的10日变化率 再做10日SMA
+            rs_mom_raw = pd.Series(rs_ratio).pct_change(periods=window).values
+            rs_momentum = pd.Series(rs_mom_raw).rolling(window=window).mean().values
+
+            # 取最后一个有效值
+            valid_idx = -1
+            for k in range(len(rs_ratio) - 1, -1, -1):
+                if not (np.isnan(rs_ratio[k]) or np.isnan(rs_momentum[k])):
+                    valid_idx = k
+                    break
+            if valid_idx < 0:
+                continue
+
+            # 标准化：以1.0为中心
+            final_rs_ratio = round(float(rs_ratio[valid_idx]) * 100, 2)
+            final_rs_momentum = round(float(rs_momentum[valid_idx]) * 100, 2)
+
+            # 提取纯行业名（去掉emoji）
+            sector_name = sector_tag.split(" ", 1)[1] if " " in sector_tag else sector_tag
+
+            results.append({
+                "sector": sector_name,
+                "sector_tag": sector_tag,
+                "stock": stock_name,
+                "rs_ratio": final_rs_ratio,
+                "rs_momentum": final_rs_momentum,
+            })
+
+    return pd.DataFrame(results) if results else pd.DataFrame()
+
+
+def build_rrg_chart(rrg_df: pd.DataFrame) -> go.Figure:
+    """
+    构建RRG图表
+    四象限：领先(RS>100, Mom>0) / 加强(RS<100, Mom>0) / 滞后(RS<100, Mom<0) / 减弱(RS>100, Mom<0)
+    """
+    if rrg_df.empty:
+        return None
+
+    fig = go.Figure()
+
+    # 四象限背景色
+    quadrant_colors = {
+        "领先": "rgba(76,175,80,0.06)",    # 绿 — RS>100, Mom>0
+        "加强": "rgba(33,150,243,0.06)",    # 蓝 — RS<100, Mom>0
+        "滞后": "rgba(244,67,54,0.06)",     # 红 — RS<100, Mom<0
+        "减弱": "rgba(255,152,0,0.06)",     # 橙 — RS>100, Mom<0
+    }
+
+    x_min, x_max = rrg_df["rs_ratio"].min() - 2, rrg_df["rs_ratio"].max() + 2
+    y_min, y_max = rrg_df["rs_momentum"].min() - 2, rrg_df["rs_momentum"].max() + 2
+    x_lo = min(x_min, 99)
+    x_hi = max(x_max, 101)
+    y_lo = min(y_min, -1)
+    y_hi = max(y_max, 1)
+
+    # 四象限矩形
+    fig.add_shape(type="rect", x0=100, y0=0, x1=x_hi, y1=y_hi,
+                  fillcolor=quadrant_colors["领先"], line_width=0, layer="below")
+    fig.add_shape(type="rect", x0=x_lo, y0=0, x1=100, y1=y_hi,
+                  fillcolor=quadrant_colors["加强"], line_width=0, layer="below")
+    fig.add_shape(type="rect", x0=x_lo, y0=y_lo, x1=100, y1=-0,
+                  fillcolor=quadrant_colors["滞后"], line_width=0, layer="below")
+    fig.add_shape(type="rect", x0=100, y0=y_lo, x1=x_hi, y1=-0,
+                  fillcolor=quadrant_colors["减弱"], line_width=0, layer="below")
+
+    # 十字线
+    fig.add_shape(type="line", x0=x_lo, y0=0, x1=x_hi, y1=0,
+                  line=dict(color="#555", width=1, dash="dash"))
+    fig.add_shape(type="line", x0=100, y0=y_lo, x1=100, y1=y_hi,
+                  line=dict(color="#555", width=1, dash="dash"))
+
+    # 象限标签
+    fig.add_annotation(x=(100 + x_hi) / 2, y=y_hi - 0.5, text="领先 Leading",
+                       font=dict(size=13, color="#4CAF50"), showarrow=False)
+    fig.add_annotation(x=(x_lo + 100) / 2, y=y_hi - 0.5, text="加强 Improving",
+                       font=dict(size=13, color="#2196F3"), showarrow=False)
+    fig.add_annotation(x=(x_lo + 100) / 2, y=y_lo + 0.5, text="滞后 Lagging",
+                       font=dict(size=13, color="#F44336"), showarrow=False)
+    fig.add_annotation(x=(100 + x_hi) / 2, y=y_lo + 0.5, text="减弱 Weakening",
+                       font=dict(size=13, color="#FF9800"), showarrow=False)
+
+    # 按行业分组绘制散点
+    sector_colors = {
+        "科技互联网": "#2196F3", "金融银行": "#FF9800", "消费零售": "#4CAF50",
+        "医药生物": "#9C27B0", "新能源汽车": "#00BCD4", "能源资源": "#FFEB3B",
+        "通信运营商": "#E91E63", "地产基建": "#795548", "博彩文旅": "#FF5722",
+        "半导体芯片": "#607D8B",
+    }
+
+    for sector in rrg_df["sector"].unique():
+        sub = rrg_df[rrg_df["sector"] == sector]
+        color = sector_colors.get(sector, "#999")
+        fig.add_trace(go.Scatter(
+            x=sub["rs_ratio"], y=sub["rs_momentum"],
+            mode="markers+text",
+            text=sub["stock"], textposition="top center",
+            textfont=dict(size=10, color=color),
+            marker=dict(size=12, color=color, symbol="circle",
+                        line=dict(width=1, color="#fff")),
+            name=sector,
+            hovertemplate="<b>%{text}</b><br>行业: " + sector +
+                          "<br>RS-Ratio: %{x:.2f}<br>RS-Momentum: %{y:.2f}<extra></extra>",
+        ))
+
+    fig.update_layout(
+        height=550,
+        plot_bgcolor="#131722",
+        paper_bgcolor="#131722",
+        font_color="#d1d4dc",
+        margin=dict(l=60, r=20, t=40, b=50),
+        xaxis=dict(
+            title="JdK RS-Ratio",
+            showgrid=True, gridcolor="#2B2B43",
+            range=[x_lo, x_hi],
+        ),
+        yaxis=dict(
+            title="JdK RS-Momentum",
+            showgrid=True, gridcolor="#2B2B43",
+            range=[y_lo, y_hi],
+        ),
+        legend=dict(
+            font=dict(size=10, color="#d1d4dc"),
+            bgcolor="rgba(0,0,0,0.3)",
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="right", x=1,
+        ),
+    )
+    return fig
 
 def calc_sector_stats(data_dict: dict) -> pd.DataFrame:
     """计算行业龙头股票的涨跌统计"""
@@ -588,39 +750,50 @@ else:
         )
         st.plotly_chart(bar_fig, use_container_width=True, config=dict(displayModeBar=False))
 
-# ---- 全行业概览 ----
+# ---- 全行业 RRG 图表 ----
 st.markdown("---")
-st.subheader("🔍 全行业龙头一览")
+st.subheader("🔍 全行业龙头 RRG 相对旋转图")
+st.caption("以恒生指数为基准，X轴=RS-Ratio(相对强度)，Y轴=RS-Momentum(强度动量)")
 
-with st.expander("📊 查看全部行业龙头最新行情", expanded=False):
-    all_stats = []
-    progress = st.progress(0)
-    total_sectors = len(HK_SECTORS)
+with st.spinner("正在获取全行业数据并计算RRG指标..."):
+    # 获取恒指作为基准
+    hsi_df = fetch_stock_data("^HSI", "3mo")
+    if hsi_df is not None and len(hsi_df) > 30:
+        # 收集所有行业龙头数据
+        all_sector_data = {}
+        progress = st.progress(0)
+        total_sectors = len(HK_SECTORS)
 
-    for si, (s_name, s_info) in enumerate(HK_SECTORS.items()):
-        top_stocks = dict(list(s_info["stocks"].items())[:2])
-        s_data = fetch_multiple_stocks(top_stocks, "1mo")
+        for si, (s_name, s_info) in enumerate(HK_SECTORS.items()):
+            top_stocks = dict(list(s_info["stocks"].items())[:2])
+            s_data = fetch_multiple_stocks(top_stocks, "3mo")
+            if s_data:
+                all_sector_data[s_name] = s_data
+            progress.progress((si + 1) / total_sectors)
 
-        for stock_name, df in s_data.items():
-            if df is not None and len(df) >= 2:
-                latest = float(df.iloc[-1]["Close"])
-                prev = float(df.iloc[0]["Close"])
-                chg = (latest - prev) / prev * 100
-                all_stats.append({
-                    "行业": s_name.split(" ")[1] if " " in s_name else s_name,
-                    "股票": stock_name,
-                    "代码": top_stocks[stock_name],
-                    "最新价": round(latest, 2),
-                    "月涨跌%": round(chg, 2),
-                })
+        rrg_df = calc_rrg(all_sector_data, hsi_df)
 
-        progress.progress((si + 1) / total_sectors)
-
-    if all_stats:
-        all_df = pd.DataFrame(all_stats)
-        styled_all = all_df.style.map(color_change, subset=["月涨跌%"])
-        st.dataframe(styled_all, use_container_width=True, hide_index=True)
-        st.caption("数据为近1个月涨跌幅，仅供参考")
+        if not rrg_df.empty:
+            rrg_fig = build_rrg_chart(rrg_df)
+            if rrg_fig:
+                st.plotly_chart(rrg_fig, use_container_width=True, config=dict(
+                    displayModeBar=False, scrollZoom=True,
+                ))
+            # 同时展示数据表
+            with st.expander("📊 查看RRG原始数据", expanded=False):
+                display_df = rrg_df[["sector", "stock", "rs_ratio", "rs_momentum"]].copy()
+                display_df.columns = ["行业", "股票", "RS-Ratio", "RS-Momentum"]
+                def _rrg_style(val):
+                    if isinstance(val, (int, float)):
+                        return "color: #4CAF50" if val >= 100 else "color: #F44336" if val < 100 else ""
+                    return ""
+                styled_rrg = display_df.style.map(_rrg_style, subset=["RS-Ratio"])
+                st.dataframe(styled_rrg, use_container_width=True, hide_index=True)
+                st.caption("RS-Ratio > 100 表示跑赢基准，< 100 表示跑输基准")
+        else:
+            st.warning("数据不足，无法生成RRG图表")
+    else:
+        st.warning("恒生指数基准数据获取失败，无法生成RRG图表")
 
 # ---- 底部信息 ----
 st.markdown("---")
